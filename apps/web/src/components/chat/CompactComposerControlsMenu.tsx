@@ -11,14 +11,27 @@ import {
   MenuTrigger,
 } from "../ui/menu";
 
+const runtimeModeItems: ReadonlyArray<{ value: RuntimeMode; label: string }> = [
+  { value: "approval-required", label: "Supervised" },
+  { value: "auto-accept-edits", label: "Auto-accept edits" },
+  { value: "auto", label: "Auto" },
+  { value: "full-access", label: "Full access" },
+];
+
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
   showInteractionModeToggle: boolean;
+  supportedRuntimeModes?: ReadonlyArray<RuntimeMode> | undefined;
   traitsMenuContent?: ReactNode;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
+  const supportedRuntimeModes = props.supportedRuntimeModes;
+  const availableRuntimeModeItems =
+    supportedRuntimeModes && supportedRuntimeModes.length > 0
+      ? runtimeModeItems.filter((item) => supportedRuntimeModes.includes(item.value))
+      : runtimeModeItems;
   return (
     <Menu>
       <MenuTrigger
@@ -64,10 +77,11 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             props.onRuntimeModeChange(value as RuntimeMode);
           }}
         >
-          <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-          <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
-          <MenuRadioItem value="auto">Auto</MenuRadioItem>
-          <MenuRadioItem value="full-access">Full access</MenuRadioItem>
+          {availableRuntimeModeItems.map((item) => (
+            <MenuRadioItem key={item.value} value={item.value}>
+              {item.label}
+            </MenuRadioItem>
+          ))}
         </MenuRadioGroup>
       </MenuPopup>
     </Menu>

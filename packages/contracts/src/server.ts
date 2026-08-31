@@ -19,6 +19,7 @@ import {
 } from "./keybindings.ts";
 import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
 import { ModelCapabilities } from "./model.ts";
+import { RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerSettings } from "./settings.ts";
 
@@ -171,6 +172,11 @@ export const ServerProvider = Schema.Struct({
   continuation: Schema.optional(ServerProviderContinuation),
   showInteractionModeToggle: Schema.optional(Schema.Boolean),
   requiresNewThreadForModelChange: Schema.optional(Schema.Boolean),
+  // Runtime modes this provider can actually honor. Absent means all modes.
+  // A provider whose agent has no permission callback (e.g. Prime Agent)
+  // declares ["full-access"] so clients don't offer approval modes that
+  // cannot gate anything.
+  supportedRuntimeModes: Schema.optional(Schema.Array(RuntimeMode)),
   enabled: Schema.Boolean,
   installed: Schema.Boolean,
   version: Schema.NullOr(TrimmedNonEmptyString),

@@ -68,6 +68,8 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
         environment,
         childProcessSpawner: commandSpawner,
         cwd,
+        // Throwaway run: do not leave a session file behind per generation.
+        noSession: true,
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 

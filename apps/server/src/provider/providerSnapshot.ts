@@ -1,6 +1,7 @@
 import type {
   ProviderDriverKind,
   ModelCapabilities,
+  RuntimeMode,
   ServerProvider,
   ServerProviderAuth,
   ServerProviderSkill,
@@ -57,6 +58,7 @@ export interface ServerProviderPresentation {
   readonly badgeLabel?: string;
   readonly showInteractionModeToggle?: boolean;
   readonly requiresNewThreadForModelChange?: boolean;
+  readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
 }
 
 export type ServerProviderDraft = Omit<ServerProvider, "instanceId" | "driver">;
@@ -238,6 +240,9 @@ export function buildServerProvider(input: {
       : {}),
     ...(typeof input.presentation.requiresNewThreadForModelChange === "boolean"
       ? { requiresNewThreadForModelChange: input.presentation.requiresNewThreadForModelChange }
+      : {}),
+    ...(input.presentation.supportedRuntimeModes
+      ? { supportedRuntimeModes: input.presentation.supportedRuntimeModes }
       : {}),
     enabled: input.enabled,
     installed: input.probe.installed,

@@ -312,7 +312,10 @@ import {
   XIcon,
 } from "lucide-react";
 import { proposedPlanTitle } from "../../proposedPlan";
-import { getProviderInteractionModeToggle } from "../../providerModels";
+import {
+  getProviderInteractionModeToggle,
+  getProviderSupportedRuntimeModes,
+} from "../../providerModels";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
@@ -409,9 +412,17 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   showInteractionModeToggle: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
+  supportedRuntimeModes?: ReadonlyArray<RuntimeMode> | undefined;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
+  const supportedRuntimeModes = props.supportedRuntimeModes;
+  // An empty declaration is treated as "no restriction" so a malformed
+  // snapshot cannot render an empty picker.
+  const availableRuntimeModes =
+    supportedRuntimeModes && supportedRuntimeModes.length > 0
+      ? runtimeModeOptions.filter((mode) => supportedRuntimeModes.includes(mode))
+      : runtimeModeOptions;
   const runtimeModeOption = runtimeModeConfig[props.runtimeMode];
   const RuntimeModeIcon = runtimeModeOption.icon;
   const interactionModeTooltip =
@@ -468,7 +479,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
             <SelectValue>{runtimeModeOption.label}</SelectValue>
           </TooltipTrigger>
           <SelectPopup alignItemWithTrigger={false}>
-            {runtimeModeOptions.map((mode) => {
+            {availableRuntimeModes.map((mode) => {
               const option = runtimeModeConfig[mode];
               const OptionIcon = option.icon;
               return (
@@ -1147,6 +1158,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () => ({
       showInteractionModeToggle:
         planModeUiEnabled && getProviderInteractionModeToggle(providerStatuses, selectedProvider),
+      supportedRuntimeModes: getProviderSupportedRuntimeModes(providerStatuses, selectedProvider),
     }),
     [planModeUiEnabled, providerStatuses, selectedProvider],
   );
@@ -4152,6 +4164,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                      supportedRuntimeModes={composerProviderControls.supportedRuntimeModes}
                       traitsMenuContent={providerTraitsMenuContent}
                       onToggleInteractionMode={toggleInteractionMode}
                       onRuntimeModeChange={handleRuntimeModeChange}
@@ -4173,6 +4186,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         }
                         interactionMode={interactionMode}
                         runtimeMode={runtimeMode}
+                        supportedRuntimeModes={composerProviderControls.supportedRuntimeModes}
                         onToggleInteractionMode={toggleInteractionMode}
                         onRuntimeModeChange={handleRuntimeModeChange}
                       />

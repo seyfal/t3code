@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off
 /**
  * PrimeAgentSkills — skill discovery for the `$` picker via a filesystem scan.
  *
@@ -19,8 +20,8 @@
  *
  * @module provider/Drivers/PrimeAgentSkills
  */
-import { homedir } from "node:os";
-import { join } from "node:path";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import type { PrimeAgentSettings, ServerProviderSkill } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
@@ -61,8 +62,10 @@ export function parsePrimeAgentSkillFrontmatter(content: string): SkillFrontmatt
 
 function resolvePrimeAgentUserSkillsDir(environment: NodeJS.ProcessEnv): string {
   const configuredHome = environment.PRIME_AGENT_CODING_AGENT_DIR?.trim();
-  const agentHome = configuredHome || join(environment.HOME?.trim() || homedir(), ".prime", "agent");
-  return join(agentHome, "skills");
+  const agentHome =
+    configuredHome ||
+    NodePath.join(environment.HOME?.trim() || NodeOS.homedir(), ".prime", "agent");
+  return NodePath.join(agentHome, "skills");
 }
 
 async function collectSkillsFromDirectory(
@@ -80,7 +83,7 @@ async function collectSkillsFromDirectory(
       return;
     }
     for (const entry of entries) {
-      const entryPath = join(directory, entry.name);
+      const entryPath = NodePath.join(directory, entry.name);
       if (entry.isDirectory()) {
         if (depth < PRIME_AGENT_SKILLS_MAX_DEPTH) {
           await walk(entryPath, depth + 1);
@@ -142,7 +145,7 @@ export const discoverPrimeAgentSkills = Effect.fn("discoverPrimeAgentSkills")(fu
       // matching Prime Agent's own project-over-user precedence.
       if (cwd?.trim()) {
         await collectSkillsFromDirectory(
-          join(cwd.trim(), ".prime", "agent", "skills"),
+          NodePath.join(cwd.trim(), ".prime", "agent", "skills"),
           "project",
           sink,
         );

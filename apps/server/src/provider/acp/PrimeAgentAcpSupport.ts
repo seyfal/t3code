@@ -29,12 +29,29 @@ interface PrimeAgentAcpRuntimeInput extends Omit<
   /** Model to pin via `--model` at spawn; ACP-level set_model is unsupported. */
   readonly modelId?: string | undefined;
   /**
-   * Prime Agent session to resume via `--resume` at spawn. Deliberately NOT
-   * forwarded to the shared ACP runtime: Prime Agent has no `session/load`,
-   * so the runtime always performs `session/new` against the (already
-   * resumed) underlying session fixed at process startup.
+   * Directory Prime Agent stores its session JSONL in (`--session-dir`).
+   * The adapter passes a per-thread directory so `--continue` can find the
+   * thread's one session deterministically. Deliberately NOT forwarded to
+   * the shared ACP runtime: Prime Agent has no `session/load`, so the
+   * runtime always performs `session/new` against the underlying session
+   * fixed at process startup.
    */
-  readonly resumeSessionId?: string | undefined;
+  readonly sessionDir?: string | undefined;
+  /**
+   * Resume the most recent session in `sessionDir` via `--continue`.
+   * Verified against prime-agent 0.8.1: the ACP `session/new` response's
+   * sessionId is a fresh random UUID unrelated to the on-disk session file
+   * (`acp-mode.ts` calls `randomUUID()`), so `--resume <acpSessionId>` can
+   * never match a saved session. `--continue` scoped to the per-thread
+   * `--session-dir` is the reliable mapping.
+   */
+  readonly continueConversation?: boolean | undefined;
+  /**
+   * Do not save a session file (`--no-session`). For throwaway runs such as
+   * commit-message generation, which would otherwise litter the user's
+   * session directory with one file per invocation.
+   */
+  readonly noSession?: boolean | undefined;
 }
 
 /**
@@ -46,13 +63,20 @@ interface PrimeAgentAcpRuntimeInput extends Omit<
  */
 export function primeAgentAcpSpawnArgs(options?: {
   readonly modelId?: string | undefined;
-  readonly resumeSessionId?: string | undefined;
+  readonly sessionDir?: string | undefined;
+  readonly continueConversation?: boolean | undefined;
+  readonly noSession?: boolean | undefined;
 }): ReadonlyArray<string> {
   return [
     "--mode",
     "acp",
     ...(options?.modelId ? ["--model", options.modelId] : []),
-    ...(options?.resumeSessionId ? ["--resume", options.resumeSessionId] : []),
+    ...(options?.sessionDir ? ["--session-dir", options.sessionDir] : []),
+    // `--continue` falls back to a fresh session when the directory holds no
+    // matching session, so a lost session file degrades to a new
+    // conversation instead of a dead thread.
+    ...(options?.continueConversation ? ["--continue"] : []),
+    ...(options?.noSession ? ["--no-session"] : []),
   ];
 }
 
@@ -62,7 +86,9 @@ export function buildPrimeAgentAcpSpawnInput(
   environment?: NodeJS.ProcessEnv,
   options?: {
     readonly modelId?: string | undefined;
-    readonly resumeSessionId?: string | undefined;
+    readonly sessionDir?: string | undefined;
+    readonly continueConversation?: boolean | undefined;
+    readonly noSession?: boolean | undefined;
   },
 ): AcpSessionRuntime.AcpSpawnInput {
   return {
@@ -83,14 +109,21 @@ export const makePrimeAgentAcpRuntime = (
   Crypto.Crypto | Scope.Scope
 > =>
   Effect.gen(function* () {
-    const { modelId, resumeSessionId, ...runtimeInput } = input;
+    const { modelId, sessionDir, continueConversation, noSession, ...runtimeInput } = input;
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...runtimeInput,
-        spawn: buildPrimeAgentAcpSpawnInput(input.primeAgentSettings, input.cwd, input.environment, {
-          modelId,
-          resumeSessionId,
-        }),
+        spawn: buildPrimeAgentAcpSpawnInput(
+          input.primeAgentSettings,
+          input.cwd,
+          input.environment,
+          {
+            modelId,
+            sessionDir,
+            continueConversation,
+            noSession,
+          },
+        ),
         authMethodId: null,
       }).pipe(
         Layer.provide(

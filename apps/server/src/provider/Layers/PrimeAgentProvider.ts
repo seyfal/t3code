@@ -4,12 +4,10 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
-import type * as EffectAcpSchema from "effect-acp/schema";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { HttpClient } from "effect/unstable/http";
@@ -29,31 +27,32 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
-import {
-  isValidPrimeAgentReasoningEffortToken,
-  makePrimeAgentAcpRuntime,
-  resolvePrimeAgentAcpBaseModelId,
-} from "../acp/PrimeAgentAcpSupport.ts";
 import { discoverPrimeAgentSkills } from "../Drivers/PrimeAgentSkills.ts";
 
 const PRIME_AGENT_PRESENTATION = {
   displayName: "Prime Agent",
   badgeLabel: "Early Access",
   showInteractionModeToggle: false,
+  // Prime Agent's ACP mode never sends `session/request_permission` (its
+  // tool is a trusted Python REPL, "a trusted-code boundary, not a
+  // sandbox"), so approval-based runtime modes cannot gate anything.
+  // Advertise the one mode that tells the truth.
+  supportedRuntimeModes: ["full-access"],
 } as const;
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
-const PRIME_AGENT_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+// `prime-agent model list` may refresh provider catalogs over the network.
+const PRIME_AGENT_MODEL_LIST_TIMEOUT_MS = 10_000;
 
 const PRIME_AGENT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     // Prime Agent's `--model` flag takes a pattern, resolved against whatever
     // providers the user has authenticated inside Prime Agent itself. "sonnet"
     // is a safe pattern for the common Claude subscription path; real catalogs
-    // come from ACP discovery or the customModels setting.
+    // come from `prime-agent model list` or the customModels setting.
     slug: "sonnet",
     name: "Claude Sonnet (via Prime Agent)",
     isCustom: false,
@@ -107,152 +106,53 @@ function primeAgentModelsFromSettings(
   return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
 }
 
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" ? value.trim() || undefined : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function primeAgentReasoningOptionsFromModel(model: EffectAcpSchema.ModelInfo): {
-  readonly options: ReadonlyArray<{
-    value: string;
-    label: string;
-    description?: string;
-    isDefault?: boolean;
-  }>;
-  readonly currentValue: string | undefined;
-} {
-  const meta = model._meta;
-  if (!meta || meta.supportsReasoningEffort === false) {
-    return { options: [], currentValue: undefined };
-  }
-
-  const currentEffort = nonEmptyString(meta.reasoningEffort);
-  const advertisedOptions = Array.isArray(meta.reasoningEfforts) ? meta.reasoningEfforts : [];
-  const seen = new Set<string>();
-  const options: Array<{
-    value: string;
-    label: string;
-    description?: string;
-    advertisedDefault: boolean;
-  }> = [];
-
-  for (const entry of advertisedOptions) {
-    if (!isRecord(entry)) {
-      continue;
-    }
-    const rawValue = nonEmptyString(entry.value);
-    const rawId = nonEmptyString(entry.id);
-    const value =
-      rawValue && isValidPrimeAgentReasoningEffortToken(rawValue)
-        ? rawValue
-        : rawId && isValidPrimeAgentReasoningEffortToken(rawId)
-          ? rawId
-          : undefined;
-    if (value === undefined || seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    const description = nonEmptyString(entry.description);
-    options.push({
-      value,
-      label: nonEmptyString(entry.label) ?? value,
-      ...(description ? { description } : {}),
-      advertisedDefault: entry.default === true || entry.isDefault === true,
-    });
-  }
-
-  const currentValue =
-    currentEffort && options.some((option) => option.value === currentEffort)
-      ? currentEffort
-      : undefined;
-  const advertisedDefaults = options.filter((option) => option.advertisedDefault);
-  const selectedDefault =
-    advertisedDefaults.find((option) => option.value === currentValue)?.value ??
-    advertisedDefaults[0]?.value;
-  return {
-    options: options.map(({ value, label, description }) => ({
-      value,
-      label,
-      ...(description ? { description } : {}),
-      ...(value === selectedDefault ? { isDefault: true } : {}),
-    })),
-    currentValue: currentValue ?? selectedDefault,
-  };
-}
-
-export function buildPrimeAgentModelCapabilities(model: EffectAcpSchema.ModelInfo): ModelCapabilities {
-  const reasoning = primeAgentReasoningOptionsFromModel(model);
-  return reasoning.options.length > 0
-    ? createModelCapabilities({
-        optionDescriptors: [
-          {
-            id: "reasoningEffort",
-            label: "Reasoning",
-            type: "select",
-            options: reasoning.options.map((option) => ({
-              id: option.value,
-              label: option.label,
-              ...(option.description ? { description: option.description } : {}),
-              ...(option.isDefault ? { isDefault: true } : {}),
-            })),
-            ...(reasoning.currentValue ? { currentValue: reasoning.currentValue } : {}),
-          },
-        ],
-      })
-    : EMPTY_CAPABILITIES;
-}
-
-function buildPrimeAgentDiscoveredModelsFromSessionModelState(
-  modelState: EffectAcpSchema.SessionModelState | null | undefined,
-): ReadonlyArray<ServerProviderModel> {
-  if (!modelState || modelState.availableModels.length === 0) {
+/**
+ * Parse `prime-agent model list` output (verified against 0.8.1's
+ * `cli/list-models.ts`): a padded-column table whose header row starts with
+ * `provider` followed by `model`, one model per subsequent row. Rows become
+ * `provider/id` slugs — the exact pattern form `--model` accepts. Returns []
+ * for anything unrecognized so the caller falls back to the built-in list.
+ */
+export function parsePrimeAgentModelListOutput(output: string): ReadonlyArray<ServerProviderModel> {
+  const lines = output.split(/\r?\n/);
+  const headerIndex = lines.findIndex((line) => /^provider\s+model(\s|$)/.test(line.trim()));
+  if (headerIndex < 0) {
     return [];
   }
   const seen = new Set<string>();
-  return modelState.availableModels
-    .map((model): ServerProviderModel | undefined => {
-      const slug = resolvePrimeAgentAcpBaseModelId(model.modelId);
-      if (!slug || seen.has(slug)) {
-        return undefined;
-      }
-      seen.add(slug);
-      return {
-        slug,
-        name: model.name.trim() || slug,
-        isCustom: false,
-        capabilities: buildPrimeAgentModelCapabilities(model),
-      };
-    })
-    .filter((model): model is ServerProviderModel => model !== undefined);
+  const models: Array<ServerProviderModel> = [];
+  for (const line of lines.slice(headerIndex + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const [provider, modelId] = trimmed.split(/\s{2,}/);
+    if (!provider?.trim() || !modelId?.trim()) {
+      continue;
+    }
+    const slug = `${provider.trim()}/${modelId.trim()}`;
+    if (seen.has(slug)) {
+      continue;
+    }
+    seen.add(slug);
+    models.push({
+      slug,
+      name: slug,
+      isCustom: false,
+      capabilities: EMPTY_CAPABILITIES,
+    });
+  }
+  return models;
 }
 
-const discoverPrimeAgentModelsViaAcp = (
+const runPrimeAgentCommand = (
   primeAgentSettings: PrimeAgentSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-) =>
-  Effect.gen(function* () {
-    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const acp = yield* makePrimeAgentAcpRuntime({
-      primeAgentSettings,
-      environment,
-      childProcessSpawner,
-      cwd: process.cwd(),
-      clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
-    });
-    const started = yield* acp.start();
-    return buildPrimeAgentDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models);
-  }).pipe(Effect.scoped);
-
-const runPrimeAgentVersionCommand = (
-  primeAgentSettings: PrimeAgentSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  args: ReadonlyArray<string>,
+  environment: NodeJS.ProcessEnv,
 ) =>
   Effect.gen(function* () {
     const command = primeAgentSettings.binaryPath || "prime-agent";
-    const spawnCommand = yield* resolveSpawnCommand(command, ["--version"], {
+    const spawnCommand = yield* resolveSpawnCommand(command, [...args], {
       env: environment,
     });
     return yield* spawnAndCollect(
@@ -292,10 +192,11 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
     });
   }
 
-  const versionResult = yield* runPrimeAgentVersionCommand(primeAgentSettings, environment).pipe(
-    Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS),
-    Effect.result,
-  );
+  const versionResult = yield* runPrimeAgentCommand(
+    primeAgentSettings,
+    ["--version"],
+    environment,
+  ).pipe(Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS), Effect.result);
 
   if (Result.isFailure(versionResult)) {
     const error = versionResult.failure;
@@ -330,7 +231,8 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message: "Prime Agent CLI is installed but timed out while running `prime-agent --version`.",
+        message:
+          "Prime Agent CLI is installed but timed out while running `prime-agent --version`.",
       },
     });
   }
@@ -360,14 +262,31 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
 
   const skills = yield* discoverPrimeAgentSkills(primeAgentSettings, environment, cwd);
 
-  const discoveryExit = yield* discoverPrimeAgentModelsViaAcp(primeAgentSettings, environment).pipe(
-    Effect.timeoutOption(PRIME_AGENT_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
-    Effect.exit,
-  );
-  if (Exit.isFailure(discoveryExit)) {
-    yield* Effect.logWarning("PrimeAgent ACP model discovery failed", {
-      errorTag: causeErrorTag(discoveryExit.cause),
-    });
+  // Auth + model discovery ride on `prime-agent model list`. Verified against
+  // 0.8.1: ACP startup succeeds with no credentials at all (`initialize` and
+  // `session/new` both answer; only `session/prompt` fails with "No API key
+  // found"), and `session/new` returns nothing but a sessionId — so an ACP
+  // spawn can detect neither auth state nor the model catalog. `model list`
+  // exits 0 in both states; the "No models available" text is the logged-out
+  // signal, and the table rows are the authenticated catalog.
+  const modelListResult = yield* runPrimeAgentCommand(
+    primeAgentSettings,
+    ["model", "list"],
+    environment,
+  ).pipe(Effect.timeoutOption(PRIME_AGENT_MODEL_LIST_TIMEOUT_MS), Effect.result);
+
+  if (Result.isFailure(modelListResult) || Option.isNone(modelListResult.success)) {
+    if (Result.isFailure(modelListResult)) {
+      yield* Effect.logWarning("PrimeAgent model list probe failed.", {
+        errorTag: modelListResult.failure._tag,
+      });
+    } else {
+      yield* Effect.logWarning(
+        `PrimeAgent model list probe timed out after ${PRIME_AGENT_MODEL_LIST_TIMEOUT_MS}ms.`,
+      );
+    }
+    // The binary itself runs (version probe passed); only the auth/catalog
+    // signal is missing. Stay usable with the fallback models.
     return buildServerProvider({
       presentation: PRIME_AGENT_PRESENTATION,
       enabled: primeAgentSettings.enabled,
@@ -377,16 +296,15 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
       probe: {
         installed: true,
         version,
-        status: "error",
+        status: "ready",
         auth: { status: "unknown" },
-        message: "Prime Agent CLI is installed but ACP startup failed. Check server logs for details.",
       },
     });
   }
-  if (Option.isNone(discoveryExit.value)) {
-    yield* Effect.logWarning(
-      `PrimeAgent ACP model discovery timed out after ${PRIME_AGENT_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
-    );
+
+  const modelListOutput = modelListResult.success.value;
+  const modelListText = `${modelListOutput.stdout}\n${modelListOutput.stderr}`;
+  if (modelListText.includes("No models available")) {
     return buildServerProvider({
       presentation: PRIME_AGENT_PRESENTATION,
       enabled: primeAgentSettings.enabled,
@@ -396,13 +314,15 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
       probe: {
         installed: true,
         version,
-        status: "error",
-        auth: { status: "unknown" },
-        message: `Prime Agent CLI is installed but ACP startup timed out after ${PRIME_AGENT_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
+        status: "warning",
+        auth: { status: "unauthenticated" },
+        message:
+          "Prime Agent has no provider credentials. Run `prime-agent` and use /login, or set a provider API key (e.g. ANTHROPIC_API_KEY).",
       },
     });
   }
-  const discoveredModels = discoveryExit.value.value;
+
+  const discoveredModels = parsePrimeAgentModelListOutput(modelListText);
   const models =
     discoveredModels.length > 0
       ? primeAgentModelsFromSettings(primeAgentSettings.customModels, discoveredModels)
@@ -418,7 +338,7 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
       installed: true,
       version,
       status: "ready",
-      auth: { status: "unknown" },
+      auth: { status: "authenticated" },
     },
   });
 });

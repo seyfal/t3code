@@ -193,9 +193,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const resolveNotificationTurnId = (ctx: PrimeAgentSessionContext): TurnId | undefined => ctx.activeTurnId;
+const resolveNotificationTurnId = (ctx: PrimeAgentSessionContext): TurnId | undefined =>
+  ctx.activeTurnId;
 
-const resolveCallbackTurnId = (ctx: PrimeAgentSessionContext): TurnId | undefined => ctx.activeTurnId;
+const resolveCallbackTurnId = (ctx: PrimeAgentSessionContext): TurnId | undefined =>
+  ctx.activeTurnId;
 
 function clearProposedPlanFallback(ctx: PrimeAgentSessionContext): void {
   ctx.lastKnownProposedPlanMarkdown = undefined;
@@ -317,7 +319,10 @@ export function primeAgentPromptSettlementBelongsToContext(input: {
   );
 }
 
-export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, options?: PrimeAgentAdapterLiveOptions) {
+export function makePrimeAgentAdapter(
+  primeAgentSettings: PrimeAgentSettings,
+  options?: PrimeAgentAdapterLiveOptions,
+) {
   return Effect.gen(function* () {
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("primeAgent");
     const fileSystem = yield* FileSystem.FileSystem;
@@ -487,19 +492,18 @@ export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, op
       return ctx && turnId !== undefined ? signalTurnLiveness(ctx, turnId) : Effect.void;
     };
 
-    const resumeSessionTurnLiveness = Effect.fn("PrimeAgentAdapter.resumeSessionTurnLiveness")(function* (
-      threadId: ThreadId,
-      turnId: TurnId | undefined,
-    ) {
-      const ctx = sessions.get(threadId);
-      if (!ctx || turnId === undefined || ctx.livenessTurnId !== turnId) {
-        return;
-      }
-      // An approval or user-input wait can last longer than the watchdog.
-      // Its resolution gives the provider a fresh window to resume output.
-      ctx.lastTurnActivityAtNanos = yield* Clock.monotonicTimeNanos;
-      yield* signalTurnLiveness(ctx, turnId);
-    });
+    const resumeSessionTurnLiveness = Effect.fn("PrimeAgentAdapter.resumeSessionTurnLiveness")(
+      function* (threadId: ThreadId, turnId: TurnId | undefined) {
+        const ctx = sessions.get(threadId);
+        if (!ctx || turnId === undefined || ctx.livenessTurnId !== turnId) {
+          return;
+        }
+        // An approval or user-input wait can last longer than the watchdog.
+        // Its resolution gives the provider a fresh window to resume output.
+        ctx.lastTurnActivityAtNanos = yield* Clock.monotonicTimeNanos;
+        yield* signalTurnLiveness(ctx, turnId);
+      },
+    );
 
     const refreshSessionTurnLiveness = Effect.fn("PrimeAgentAdapter.refreshSessionTurnLiveness")(
       function* (threadId: ThreadId, turnId: TurnId | undefined) {
@@ -517,25 +521,23 @@ export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, op
       },
     );
 
-    const markPromptResponseReady = Effect.fn("PrimeAgentAdapter.markPromptResponseReady")(function* (
-      threadId: ThreadId,
-      acpSessionId: string,
-      turnId: TurnId,
-    ) {
-      const ctx = sessions.get(threadId);
-      if (
-        ctx &&
-        ctx.acpSessionId === acpSessionId &&
-        !ctx.stopped &&
-        !ctx.interruptedTurnIds.has(turnId) &&
-        ctx.livenessTurnId === turnId &&
-        ctx.activeTurnId === turnId &&
-        ctx.session.activeTurnId === turnId
-      ) {
-        ctx.promptResponsesReady += 1;
-        yield* signalTurnLiveness(ctx, turnId);
-      }
-    });
+    const markPromptResponseReady = Effect.fn("PrimeAgentAdapter.markPromptResponseReady")(
+      function* (threadId: ThreadId, acpSessionId: string, turnId: TurnId) {
+        const ctx = sessions.get(threadId);
+        if (
+          ctx &&
+          ctx.acpSessionId === acpSessionId &&
+          !ctx.stopped &&
+          !ctx.interruptedTurnIds.has(turnId) &&
+          ctx.livenessTurnId === turnId &&
+          ctx.activeTurnId === turnId &&
+          ctx.session.activeTurnId === turnId
+        ) {
+          ctx.promptResponsesReady += 1;
+          yield* signalTurnLiveness(ctx, turnId);
+        }
+      },
+    );
 
     const consumePromptResponseReady = (ctx: PrimeAgentSessionContext) => {
       ctx.promptResponsesReady = Math.max(0, ctx.promptResponsesReady - 1);
@@ -845,7 +847,6 @@ export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, op
         );
       });
 
-
     const requireSession = (
       threadId: ThreadId,
     ): Effect.Effect<PrimeAgentSessionContext, ProviderAdapterSessionNotFoundError> => {
@@ -914,7 +915,17 @@ export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, op
             sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
           );
 
-          const resumeSessionId = parsePrimeAgentResume(input.resumeCursor)?.sessionId;
+          // The resume cursor's sessionId is the ACP-level id, which prime-agent
+          // generates fresh per connection — it can never address a saved
+          // session. Its presence only marks "this thread has prior history";
+          // the actual continuity comes from the per-thread `--session-dir`
+          // plus `--continue` below.
+          const hasPriorSession = parsePrimeAgentResume(input.resumeCursor) !== undefined;
+          const sessionDir = path.join(
+            serverConfig.stateDir,
+            "prime-agent-sessions",
+            input.threadId,
+          );
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -932,7 +943,8 @@ export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, op
             cwd,
             runtimeMode: input.runtimeMode,
             ...(spawnModelId ? { modelId: spawnModelId } : {}),
-            ...(resumeSessionId ? { resumeSessionId } : {}),
+            sessionDir,
+            ...(hasPriorSession ? { continueConversation: true } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpSession
               ? {
@@ -1225,7 +1237,10 @@ export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, op
                         rawPayload: event.rawPayload,
                       }),
                     );
-                    ctx.planModeActive = nextPrimeAgentPlanModeActive(ctx.planModeActive, event.toolCall);
+                    ctx.planModeActive = nextPrimeAgentPlanModeActive(
+                      ctx.planModeActive,
+                      event.toolCall,
+                    );
                     return;
                   }
                   case "ContentDelta":
@@ -1856,7 +1871,11 @@ export function makePrimeAgentAdapter(primeAgentSettings: PrimeAgentSettings, op
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "in-session" },
+      // Prime Agent has no `session/set_model`; the model is pinned on argv
+      // at spawn. Declaring "unsupported" makes ProviderCommandReactor
+      // restart the session when a turn carries a different model, which is
+      // the only way the new `--model` can take effect.
+      capabilities: { sessionModelSwitch: "unsupported" },
       startSession,
       sendTurn,
       interruptTurn,

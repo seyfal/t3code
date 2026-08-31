@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   type ModelCapabilities,
   type ProviderInstanceId,
+  type RuntimeMode,
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -51,6 +52,14 @@ export function getProviderInteractionModeToggle(
   provider: ProviderDriverKind,
 ): boolean {
   return getProviderSnapshot(providers, provider)?.showInteractionModeToggle ?? true;
+}
+
+// Absent means the provider honors every runtime mode (the legacy default).
+export function getProviderSupportedRuntimeModes(
+  providers: ReadonlyArray<ServerProvider>,
+  provider: ProviderDriverKind,
+): ReadonlyArray<RuntimeMode> | undefined {
+  return getProviderSnapshot(providers, provider)?.supportedRuntimeModes;
 }
 
 export function isProviderEnabled(
