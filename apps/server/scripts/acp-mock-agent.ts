@@ -35,6 +35,9 @@ const emitLateUpdateAfterCancel = process.env.T3_ACP_EMIT_LATE_UPDATE_AFTER_CANC
 const omitXAiPromptCompleteStopReason =
   process.env.T3_ACP_OMIT_XAI_PROMPT_COMPLETE_STOP_REASON === "1";
 const failLoadSession = process.env.T3_ACP_FAIL_LOAD_SESSION === "1";
+// Mimic agents (e.g. Prime Agent) whose ACP surface has no `authenticate`
+// method at all: any authenticate call fails with method-not-found.
+const rejectAuthenticate = process.env.T3_ACP_REJECT_AUTHENTICATE === "1";
 const emitLoadReplay = process.env.T3_ACP_EMIT_LOAD_REPLAY === "1";
 const hangLoadSessionAfterReplay = process.env.T3_ACP_HANG_LOAD_SESSION_AFTER_REPLAY === "1";
 const delayLoadSessionAfterReplay = process.env.T3_ACP_DELAY_LOAD_SESSION_AFTER_REPLAY === "1";
@@ -328,7 +331,11 @@ const program = Effect.gen(function* () {
     }),
   );
 
-  yield* agent.handleAuthenticate(() => Effect.succeed({}));
+  yield* agent.handleAuthenticate(() =>
+    rejectAuthenticate
+      ? Effect.fail(AcpError.AcpRequestError.methodNotFound("authenticate"))
+      : Effect.succeed({}),
+  );
 
   yield* agent.handleCreateSession(() =>
     Effect.succeed({
