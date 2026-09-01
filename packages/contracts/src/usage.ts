@@ -186,6 +186,14 @@ export const UsageSummaryInput = Schema.Struct({
   sinceTime: Schema.optional(TrimmedNonEmptyString),
   /** Exclusive UTC instant for an hourly rolling window. */
   untilTime: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * Highest {@link USAGE_CONTRACT_VERSION} the client can merge. Clients
+   * exclude summaries newer than their own version, so a server that always
+   * reported its latest version would blank the usage page on every older
+   * client. Absent means a pre-v6 client: the server omits provider kinds
+   * those clients cannot decode and stamps the summary v5.
+   */
+  maxContractVersion: Schema.optional(NonNegativeInt),
 });
 export type UsageSummaryInput = typeof UsageSummaryInput.Type;
 

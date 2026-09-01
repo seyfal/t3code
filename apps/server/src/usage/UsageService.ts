@@ -368,9 +368,18 @@ export const make = Effect.gen(function* () {
     yield* ensureScanCacheLoaded;
 
     const hostId = NodeOS.hostname();
+    // Version negotiation: clients exclude summaries newer than their own
+    // contract version, so serving "prime" buckets to a pre-v6 client would
+    // blank its whole usage page for this environment. Absent means an old
+    // client that predates the field: skip the prime roots and stamp v5.
+    const clientMaxVersion = input.maxContractVersion ?? 5;
+    const includePrime = clientMaxVersion >= 6;
+    const reportedContractVersion = includePrime ? USAGE_CONTRACT_VERSION : 5;
     // The home resolvers ask for `Path` themselves; satisfy them from the
     // instance we already hold so `readSummary` stays context-free.
-    const dirs = yield* resolveTranscriptDirs().pipe(Effect.provideService(Path.Path, path));
+    const dirs = (yield* resolveTranscriptDirs().pipe(
+      Effect.provideService(Path.Path, path),
+    )).filter((root) => includePrime || root.provider !== "prime");
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
     if (Option.isNone(windowStart)) {
       return yield* new UsageReadError({
@@ -465,7 +474,7 @@ export const make = Effect.gen(function* () {
     const finishedAtMs = yield* Clock.currentTimeMillis;
 
     return {
-      contractVersion: USAGE_CONTRACT_VERSION,
+      contractVersion: reportedContractVersion,
       readAt: DateTime.formatIso(readAt),
       timeZone: input.timeZone,
       sinceDay: input.sinceDay,

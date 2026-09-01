@@ -84,6 +84,9 @@ export function useUsage(input: UsageSummaryInput): UsageView {
         resolution: input.resolution,
         sinceTime: input.sinceTime,
         untilTime: input.untilTime,
+        // Declares which usage contract this client can merge, so the server
+        // includes provider kinds older clients cannot decode.
+        maxContractVersion: USAGE_CONTRACT_VERSION,
       }),
     [
       input.sinceDay,
