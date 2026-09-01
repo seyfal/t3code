@@ -23,6 +23,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  initialPrimeScanState,
   parsePrimeLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
@@ -120,6 +121,7 @@ export async function readTranscriptRecords(
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
+  const primeState = initialPrimeScanState();
 
   try {
     const lines = NodeReadline.createInterface({
@@ -148,8 +150,9 @@ export async function readTranscriptRecords(
       }
 
       if (provider === "prime") {
-        if (!mightCarryUsage(line, provider)) continue;
-        const record = parsePrimeLine(line);
+        // The session-id header carries no usage but must reach the parser.
+        if (!mightCarryUsage(line, provider) && !line.includes('"type":"session"')) continue;
+        const record = parsePrimeLine(line, primeState);
         if (record !== null) records.push(record);
         continue;
       }

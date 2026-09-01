@@ -165,7 +165,16 @@ export function parseClaudeLine(line: string): UsageRecord | null {
  * flow, so the same entry can exist in several files; the entry id plus
  * timestamp de-duplicates those copies.
  */
-export function parsePrimeLine(line: string): UsageRecord | null {
+export interface PrimeScanState {
+  /** Session id from the file's `{"type":"session"}` header line. */
+  sessionId: string;
+}
+
+export function initialPrimeScanState(): PrimeScanState {
+  return { sessionId: "" };
+}
+
+export function parsePrimeLine(line: string, state: PrimeScanState): UsageRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -175,6 +184,10 @@ export function parsePrimeLine(line: string): UsageRecord | null {
   if (typeof parsed !== "object" || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
+  if (record["type"] === "session") {
+    if (typeof record["id"] === "string") state.sessionId = record["id"];
+    return null;
+  }
   if (record["type"] !== "message") return null;
 
   const message = record["message"];
@@ -205,7 +218,7 @@ export function parsePrimeLine(line: string): UsageRecord | null {
     provider: "prime",
     timestampMs,
     model: `${upstreamProvider}${modelId}`,
-    sessionId: "",
+    sessionId: state.sessionId,
     totals: {
       uncachedInputTokens: int(usageRecord["input"]),
       cachedInputTokens: int(usageRecord["cacheRead"]),

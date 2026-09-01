@@ -6,6 +6,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  initialPrimeScanState,
   parsePrimeLine,
   totalTokens,
 } from "./usageTranscripts.ts";
@@ -602,7 +603,7 @@ describe("parsePrimeLine", () => {
     });
 
   it("parses an assistant entry with provider-reported cost", () => {
-    const record = parsePrimeLine(primeLine());
+    const record = parsePrimeLine(primeLine(), initialPrimeScanState());
     expect(record).not.toBeNull();
     expect(record?.provider).toBe("prime");
     expect(record?.model).toBe("baseten/moonshotai/Kimi-K3");
@@ -618,11 +619,34 @@ describe("parsePrimeLine", () => {
   });
 
   it("ignores non-assistant entries and survives missing cost/id", () => {
-    expect(parsePrimeLine(primeLine({ role: "toolResult" }))).toBeNull();
-    expect(parsePrimeLine("not json")).toBeNull();
-    const noCost = parsePrimeLine(primeLine({ cost: null }));
+    expect(parsePrimeLine(primeLine({ role: "toolResult" }), initialPrimeScanState())).toBeNull();
+    expect(parsePrimeLine("not json", initialPrimeScanState())).toBeNull();
+    const noCost = parsePrimeLine(primeLine({ cost: null }), initialPrimeScanState());
     expect(noCost?.reportedCostUsd).toBeNull();
-    const noId = parsePrimeLine(primeLine({ id: null }));
+    const noId = parsePrimeLine(primeLine({ id: null }), initialPrimeScanState());
     expect(noId?.dedupeKey).toBeNull();
+  });
+});
+
+describe("parsePrimeLine session header", () => {
+  it("stamps records with the session id from the header line", () => {
+    const state = initialPrimeScanState();
+    const header = JSON.stringify({ type: "session", version: 3, id: "sess-uuid-1" });
+    expect(parsePrimeLine(header, state)).toBeNull();
+    const record = parsePrimeLine(
+      JSON.stringify({
+        type: "message",
+        id: "aa11bb22",
+        timestamp: "2026-09-01T00:57:37.474Z",
+        message: {
+          role: "assistant",
+          provider: "baseten",
+          model: "moonshotai/Kimi-K3",
+          usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+        },
+      }),
+      state,
+    );
+    expect(record?.sessionId).toBe("sess-uuid-1");
   });
 });
