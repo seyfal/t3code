@@ -236,15 +236,14 @@ export const make = Effect.gen(function* () {
     // carry stable ids and de-duplicate in the parser.
     const primeSessionDirEnv = hostEnvironment["PRIME_AGENT_SESSION_DIR"]?.trim() ?? "";
     const primeAgentHomeEnv = hostEnvironment["PRIME_AGENT_CODING_AGENT_DIR"]?.trim() ?? "";
+    const primeAgentHome =
+      primeAgentHomeEnv.length > 0
+        ? path.resolve(expandHomePath(primeAgentHomeEnv))
+        : path.join(NodeOS.homedir(), ".prime", "agent");
     const primeSessionsDir =
       primeSessionDirEnv.length > 0
         ? path.resolve(expandHomePath(primeSessionDirEnv))
-        : path.join(
-            primeAgentHomeEnv.length > 0
-              ? path.resolve(expandHomePath(primeAgentHomeEnv))
-              : path.join(NodeOS.homedir(), ".prime", "agent"),
-            "sessions",
-          );
+        : path.join(primeAgentHome, "sessions");
 
     return [
       { provider: "claude" as const, dir: claudeDir },
@@ -256,6 +255,14 @@ export const make = Effect.gen(function* () {
       },
       { provider: "prime" as const, dir: primeSessionsDir },
       { provider: "prime" as const, dir: path.join(config.stateDir, "prime-agent-sessions") },
+      {
+        provider: "prime" as const,
+        // RLM subagents write their session files under
+        // session-artifacts/**/sub-*/, not the sessions dir; without this
+        // root, child-agent usage would be silently undercounted. Non-session
+        // .jsonl artifacts in here parse to zero records and cost one pass.
+        dir: path.join(primeAgentHome, "session-artifacts"),
+      },
     ];
   });
 
