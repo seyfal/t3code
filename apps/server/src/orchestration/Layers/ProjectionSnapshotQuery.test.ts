@@ -2131,6 +2131,47 @@ projectionSnapshotLayer("ProjectionSnapshotQuery windowed thread detail", (it) =
     }),
   );
 
+  it.effect("the oldest page owns turnless messages older than the first turn", () =>
+    Effect.gen(function* () {
+      // An imported transcript backfills turnless messages whose timestamps
+      // predate the thread's first real turn. They must land on the page that
+      // reaches the first turn instead of being stranded below every page.
+      yield* seedFanOutThread();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        )
+        VALUES ('imported-msg', 'thread-w', NULL, 'assistant', 'history from the TUI',
+          0, '2026-02-28T23:00:00.000Z', '2026-02-28T23:00:00.000Z')
+      `;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+
+      // A page that still has older turns behind it keeps its lower bound.
+      const newestPage = yield* snapshotQuery.getThreadDetailSnapshot(threadW, { turnLimit: 2 });
+      assert.equal(newestPage._tag, "Some");
+      if (newestPage._tag === "Some") {
+        assert.equal(newestPage.value.page?.hasMore, true);
+        assert.equal(
+          newestPage.value.thread.messages.some((message) => message.id === "imported-msg"),
+          false,
+        );
+      }
+
+      // The page that reaches turn-1 has no older turns: its turnless bound
+      // drops to the beginning and the imported history rides along.
+      const oldestPage = yield* snapshotQuery.getThreadDetailSnapshot(threadW, { turnLimit: 3 });
+      assert.equal(oldestPage._tag, "Some");
+      if (oldestPage._tag === "Some") {
+        assert.equal(oldestPage.value.page?.hasMore, false);
+        assert.equal(
+          oldestPage.value.thread.messages.some((message) => message.id === "imported-msg"),
+          true,
+        );
+      }
+    }),
+  );
+
   it.effect("cursors survive a projection rewrite that reassigns turn row ids", () =>
     Effect.gen(function* () {
       // The revert projector (and any projection rebuild) deletes and
