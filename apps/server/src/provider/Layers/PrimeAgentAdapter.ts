@@ -926,6 +926,19 @@ export function makePrimeAgentAdapter(
             "prime-agent-sessions",
             input.threadId,
           );
+          // Continue whenever the per-thread dir already holds a session file,
+          // even without a cursor. This (a) survives a lost resume cursor,
+          // (b) lets a user adopt an external prime-agent session by dropping
+          // its .jsonl into the thread dir, and (c) keeps thread history
+          // across a model-change restart (the orchestrator drops the cursor
+          // there; prime-agent supports continuing a session under a
+          // different `--model`, matching what in-session-switch providers
+          // give their users). `--continue` matches by the thread's cwd and
+          // still degrades to a fresh session when nothing matches.
+          const sessionDirHasSession = yield* fileSystem.readDirectory(sessionDir).pipe(
+            Effect.map((entries) => entries.some((entry) => entry.endsWith(".jsonl"))),
+            Effect.orElseSucceed(() => false),
+          );
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -944,7 +957,7 @@ export function makePrimeAgentAdapter(
             runtimeMode: input.runtimeMode,
             ...(spawnModelId ? { modelId: spawnModelId } : {}),
             sessionDir,
-            ...(hasPriorSession ? { continueConversation: true } : {}),
+            ...(hasPriorSession || sessionDirHasSession ? { continueConversation: true } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpSession
               ? {
@@ -1075,6 +1088,23 @@ export function makePrimeAgentAdapter(
                   };
                 }),
               ),
+            );
+            // Prime Agent streams reasoning (`agent_thought_chunk`) and its
+            // RLM/autonomous-gate progress (`session_info_update` carrying
+            // only `_meta`) as update kinds the shared runtime does not turn
+            // into adapter events. During a long autonomous phase these can
+            // be the only traffic on the wire, so without this raw tap the
+            // liveness watchdog would cancel a healthy turn as stalled. The
+            // tap only keeps an already-armed activity clock fresh — arming
+            // still requires observable progress — and renders nothing.
+            yield* acp.handleSessionUpdate(() =>
+              Effect.gen(function* () {
+                const liveCtx = sessions.get(input.threadId);
+                if (!liveCtx || liveCtx.acp !== acp) {
+                  return;
+                }
+                yield* refreshSessionTurnLiveness(input.threadId, liveCtx.livenessTurnId);
+              }),
             );
             return yield* acp.start();
           }).pipe(
