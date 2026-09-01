@@ -75,6 +75,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
+import { PrimeAgentImportSection } from "./PrimeAgentImportSection";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import { providerSettingsTabClassName } from "./providerSettingsTabs";
@@ -900,6 +901,10 @@ export function EnvironmentProviderSettings({
               )}
             </div>
           </div>
+
+          {serverProviders.some((provider) => provider.driver === "primeAgent") ? (
+            <PrimeAgentImportSection environmentId={environmentId} readOnly={readOnly} />
+          ) : null}
 
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-1">
             <CollapsibleTrigger className="flex h-10 w-full items-center gap-2 px-3 text-xs text-muted-foreground hover:text-foreground sm:px-4">

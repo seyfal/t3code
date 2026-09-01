@@ -1098,6 +1098,28 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ImportedTranscriptMessage = Schema.Struct({
+  messageId: MessageId,
+  role: OrchestrationMessageRole,
+  text: TrimmedNonEmptyString,
+  /** Original timestamp from the source transcript, so history reads in order. */
+  createdAt: IsoDateTime,
+});
+export type ImportedTranscriptMessage = typeof ImportedTranscriptMessage.Type;
+
+/**
+ * Backfills a thread with messages from a transcript recorded outside T3 Code
+ * (e.g. a prime-agent TUI session). Emits one `thread.message-sent` event per
+ * message; the projector and clients need no special handling.
+ */
+const ThreadTranscriptImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.transcript.import"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messages: Schema.Array(ImportedTranscriptMessage),
+  createdAt: IsoDateTime,
+});
+
 const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.title.regeneration.complete"),
   commandId: CommandId,
@@ -1114,6 +1136,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadTranscriptImportCommand,
   ThreadTitleRegenerationCompleteCommand,
 ]);
 export type InternalOrchestrationCommand = typeof InternalOrchestrationCommand.Type;

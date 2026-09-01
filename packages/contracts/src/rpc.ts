@@ -193,6 +193,12 @@ import {
   ResourceTelemetrySnapshot,
 } from "./resourceTelemetry.ts";
 import { UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  PrimeAgentImportCandidateList,
+  PrimeAgentImportError,
+  PrimeAgentImportInput,
+  PrimeAgentImportResult,
+} from "./primeAgentImport.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   SourceControlCloneRepositoryInput,
@@ -291,6 +297,8 @@ export const WS_METHODS = {
   serverReportHostPowerState: "server.reportHostPowerState",
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
+  serverListPrimeAgentImports: "server.listPrimeAgentImports",
+  serverImportPrimeAgentSession: "server.importPrimeAgentSession",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -452,6 +460,21 @@ export const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSumm
   success: UsageSummary,
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
 });
+
+export const WsServerListPrimeAgentImportsRpc = Rpc.make(WS_METHODS.serverListPrimeAgentImports, {
+  payload: Schema.Struct({}),
+  success: PrimeAgentImportCandidateList,
+  error: Schema.Union([EnvironmentAuthorizationError, PrimeAgentImportError]),
+});
+
+export const WsServerImportPrimeAgentSessionRpc = Rpc.make(
+  WS_METHODS.serverImportPrimeAgentSession,
+  {
+    payload: PrimeAgentImportInput,
+    success: PrimeAgentImportResult,
+    error: Schema.Union([EnvironmentAuthorizationError, PrimeAgentImportError]),
+  },
+);
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
   payload: ServerSignalProcessInput,
@@ -1044,6 +1067,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetResourceTelemetryHistoryRpc,
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
+  WsServerListPrimeAgentImportsRpc,
+  WsServerImportPrimeAgentSessionRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,

@@ -774,6 +774,14 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
     }),
+    listPrimeAgentImports: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:list-prime-agent-imports",
+      tag: WS_METHODS.serverListPrimeAgentImports,
+    }),
+    importPrimeAgentSession: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:import-prime-agent-session",
+      tag: WS_METHODS.serverImportPrimeAgentSession,
+    }),
     configProjection,
     welcome: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:welcome",
