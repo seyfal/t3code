@@ -229,6 +229,23 @@ export const make = Effect.gen(function* () {
         ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
+    // Prime Agent: sessions live under `$PRIME_AGENT_SESSION_DIR`, or
+    // `<agent home>/sessions` where the home is `$PRIME_AGENT_CODING_AGENT_DIR`
+    // or `~/.prime/agent`. T3's own per-thread session dirs are scanned as a
+    // second root; entries copied between the two (thread adoption, forks)
+    // carry stable ids and de-duplicate in the parser.
+    const primeSessionDirEnv = hostEnvironment["PRIME_AGENT_SESSION_DIR"]?.trim() ?? "";
+    const primeAgentHomeEnv = hostEnvironment["PRIME_AGENT_CODING_AGENT_DIR"]?.trim() ?? "";
+    const primeSessionsDir =
+      primeSessionDirEnv.length > 0
+        ? path.resolve(expandHomePath(primeSessionDirEnv))
+        : path.join(
+            primeAgentHomeEnv.length > 0
+              ? path.resolve(expandHomePath(primeAgentHomeEnv))
+              : path.join(NodeOS.homedir(), ".prime", "agent"),
+            "sessions",
+          );
+
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
@@ -237,6 +254,8 @@ export const make = Effect.gen(function* () {
         dir: path.join(grokHome, "sessions"),
         fileName: "updates.jsonl",
       },
+      { provider: "prime" as const, dir: primeSessionsDir },
+      { provider: "prime" as const, dir: path.join(config.stateDir, "prime-agent-sessions") },
     ];
   });
 

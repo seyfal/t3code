@@ -23,6 +23,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePrimeLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -143,6 +144,13 @@ export async function readTranscriptRecords(
       if (provider === "grok") {
         if (!mightCarryUsage(line, provider)) continue;
         for (const grokRecord of parseGrokLine(line)) records.push(grokRecord);
+        continue;
+      }
+
+      if (provider === "prime") {
+        if (!mightCarryUsage(line, provider)) continue;
+        const record = parsePrimeLine(line);
+        if (record !== null) records.push(record);
         continue;
       }
 

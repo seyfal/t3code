@@ -6,6 +6,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parsePrimeLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -562,5 +563,66 @@ describe("parseGrokLine", () => {
 
     const records = parseGrokLine(line);
     expect(records[0]?.timestampMs).toBe(1_786_372_566_000);
+  });
+});
+
+describe("parsePrimeLine", () => {
+  /** Shaped after a real prime-agent 0.8.1 session entry. */
+  const primeLine = (overrides?: { role?: string; cost?: number | null; id?: string | null }) =>
+    JSON.stringify({
+      type: "message",
+      id: overrides?.id === null ? undefined : (overrides?.id ?? "0ae17eb5"),
+      parentId: "a75abd74",
+      timestamp: "2026-09-01T00:57:37.474Z",
+      message: {
+        role: overrides?.role ?? "assistant",
+        content: [{ type: "text", text: "pong" }],
+        api: "anthropic-messages",
+        provider: "baseten",
+        model: "moonshotai/Kimi-K3",
+        usage: {
+          input: 1200,
+          output: 45,
+          cacheRead: 800,
+          cacheWrite: 100,
+          totalTokens: 2145,
+          cost:
+            overrides?.cost === null
+              ? undefined
+              : {
+                  input: 0.001,
+                  output: 0.0005,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  total: overrides?.cost ?? 0.0015,
+                },
+        },
+        stopReason: "stop",
+      },
+    });
+
+  it("parses an assistant entry with provider-reported cost", () => {
+    const record = parsePrimeLine(primeLine());
+    expect(record).not.toBeNull();
+    expect(record?.provider).toBe("prime");
+    expect(record?.model).toBe("baseten/moonshotai/Kimi-K3");
+    expect(record?.totals).toEqual({
+      uncachedInputTokens: 1200,
+      cachedInputTokens: 800,
+      cacheCreationTokens: 100,
+      outputTokens: 45,
+      reasoningTokens: 0,
+    });
+    expect(record?.reportedCostUsd).toBe(0.0015);
+    expect(record?.dedupeKey).toBe("prime:0ae17eb5:1788224257474");
+  });
+
+  it("ignores non-assistant entries and survives missing cost/id", () => {
+    expect(parsePrimeLine(primeLine({ role: "toolResult" }))).toBeNull();
+    expect(parsePrimeLine("not json")).toBeNull();
+    const noCost = parsePrimeLine(primeLine({ cost: null }));
+    expect(noCost?.reportedCostUsd).toBeNull();
+    const noId = parsePrimeLine(primeLine({ id: null }));
+    expect(noId?.dedupeKey).toBeNull();
   });
 });

@@ -70,6 +70,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "prime") return line.includes('"usage"');
   return line.includes('"token_count"');
 }
 
@@ -146,6 +147,75 @@ export function parseClaudeLine(line: string): UsageRecord | null {
     },
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     dedupeKey,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Prime Agent                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Prime Agent session entries (see prime-agent's `session-format.md`): one
+ * JSON object per line; assistant messages carry
+ * `message.usage: { input, output, cacheRead, cacheWrite, cost: { total } }`
+ * plus `message.provider` and `message.model`. Cost is provider-computed in
+ * USD, so buckets attribute as `providerReported`.
+ *
+ * Entries are copied verbatim by session forks and by T3's thread-adoption
+ * flow, so the same entry can exist in several files; the entry id plus
+ * timestamp de-duplicates those copies.
+ */
+export function parsePrimeLine(line: string): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+
+  const record = parsed as Record<string, unknown>;
+  if (record["type"] !== "message") return null;
+
+  const message = record["message"];
+  if (typeof message !== "object" || message === null) return null;
+  const messageRecord = message as Record<string, unknown>;
+  if (messageRecord["role"] !== "assistant") return null;
+
+  const usage = messageRecord["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const usageRecord = usage as Record<string, unknown>;
+
+  const timestampMs = parseTimestampMs(record["timestamp"]);
+  if (timestampMs === null) return null;
+
+  const modelId = typeof messageRecord["model"] === "string" ? messageRecord["model"] : "";
+  if (modelId.length === 0) return null;
+  // Prefix with the upstream provider so the usage table distinguishes e.g.
+  // fireworks/kimi-k3 from baseten/kimi-k3 — the same form `--model` accepts.
+  const upstreamProvider =
+    typeof messageRecord["provider"] === "string" && messageRecord["provider"].length > 0
+      ? `${messageRecord["provider"]}/`
+      : "";
+
+  const cost = (usageRecord["cost"] as Record<string, unknown> | undefined)?.["total"];
+  const entryId = typeof record["id"] === "string" ? record["id"] : null;
+
+  return {
+    provider: "prime",
+    timestampMs,
+    model: `${upstreamProvider}${modelId}`,
+    sessionId: "",
+    totals: {
+      uncachedInputTokens: int(usageRecord["input"]),
+      cachedInputTokens: int(usageRecord["cacheRead"]),
+      cacheCreationTokens: int(usageRecord["cacheWrite"]),
+      outputTokens: int(usageRecord["output"]),
+      // Reasoning is folded into output and not broken out.
+      reasoningTokens: 0,
+    },
+    reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    dedupeKey: entryId === null ? null : `prime:${entryId}:${timestampMs}`,
   };
 }
 

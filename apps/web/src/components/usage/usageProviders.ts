@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { ClaudeAI, GrokIcon, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, GrokIcon, type Icon, OpenAI, PrimeAgentIcon } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -29,6 +29,12 @@ export const PROVIDER_PRESENTATION = {
     // Contrast-aware neutral between the Codex series and muted chart chrome.
     color: "color-mix(in oklab, var(--contrast-foreground) 72%, var(--background))",
     mark: GrokIcon,
+  },
+  prime: {
+    label: "Prime Agent",
+    // A second neutral step below Grok keeps four stacked series legible.
+    color: "color-mix(in oklab, var(--contrast-foreground) 48%, var(--background))",
+    mark: PrimeAgentIcon,
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
