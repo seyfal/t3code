@@ -107,14 +107,21 @@ function thinkingConfigOption(currentValue: string): EffectAcpSchema.SessionConf
   } as EffectAcpSchema.SessionConfigOption;
 }
 
-function selectionRuntime(configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>) {
+function selectionRuntime(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+  afterModelSwitch?: ReadonlyArray<EffectAcpSchema.SessionConfigOption>,
+) {
   const setCalls: Array<{ configId: string; value: string | boolean }> = [];
+  let current = configOptions;
   const runtime = {
-    getConfigOptions: Effect.succeed(configOptions),
+    getConfigOptions: Effect.suspend(() => Effect.succeed(current)),
     setConfigOption: (configId: string, value: string | boolean) =>
       Effect.sync(() => {
         setCalls.push({ configId, value });
-        return { configOptions } as EffectAcpSchema.SetSessionConfigOptionResponse;
+        if (configId === "model" && afterModelSwitch) {
+          current = afterModelSwitch;
+        }
+        return { configOptions: current } as EffectAcpSchema.SetSessionConfigOptionResponse;
       }),
   } satisfies Pick<
     AcpSessionRuntime.AcpSessionRuntime["Service"],
@@ -163,6 +170,44 @@ describe("applyPrimeAgentAcpModelSelection", () => {
       });
       expect(bound).toBe("a/model-one");
       expect(setCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("validates thinking against the catalog the new model reports", () =>
+    Effect.gen(function* () {
+      // The old model supports "medium"; the new one does not. The thinking
+      // write must be validated against the post-switch catalog, and a level
+      // the new model lacks is skipped instead of failing the turn.
+      const { runtime, setCalls } = selectionRuntime(
+        [
+          modelConfigOption("a/model-one", ["a/model-one", "b/model-two"]),
+          thinkingConfigOption("medium"),
+        ],
+        [
+          modelConfigOption("b/model-two", ["a/model-one", "b/model-two"]),
+          {
+            id: "thinking",
+            name: "Thinking",
+            category: "thought_level",
+            type: "select",
+            currentValue: "high",
+            options: [
+              { value: "off", name: "off" },
+              { value: "high", name: "high" },
+            ],
+          } as EffectAcpSchema.SessionConfigOption,
+        ],
+      );
+
+      const bound = yield* applyPrimeAgentAcpModelSelection({
+        runtime,
+        currentModelId: "a/model-one",
+        requestedModelId: "b/model-two",
+        requestedReasoningEffort: "medium",
+        mapError: (cause) => cause,
+      });
+      expect(bound).toBe("b/model-two");
+      expect(setCalls).toEqual([{ configId: "model", value: "b/model-two" }]);
     }),
   );
 

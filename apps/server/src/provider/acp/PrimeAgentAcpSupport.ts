@@ -269,16 +269,27 @@ export function applyPrimeAgentAcpModelSelection<E>(input: {
       boundModelId = input.requestedModelId;
     }
 
-    const thinkingOption = findPrimeAgentConfigOptionByCategory(configOptions, "thought_level");
+    // Re-read after the model write: the available thinking levels are
+    // per-model in prime-agent, so a model switch invalidates the list
+    // fetched above (the runtime refreshed its snapshot from the
+    // set_config_option response).
+    const refreshedOptions = yield* input.runtime.getConfigOptions;
+    const thinkingOption = findPrimeAgentConfigOptionByCategory(refreshedOptions, "thought_level");
     const requestedEffort = normalizePrimeAgentReasoningEffort(input.requestedReasoningEffort);
     if (
       thinkingOption &&
       requestedEffort &&
       collectSessionConfigOptionValues(thinkingOption).includes(requestedEffort)
     ) {
+      // A level the new model does not support must never kill the turn:
+      // thinking is a preference, the prompt is the work. Log and move on.
       yield* input.runtime
         .setConfigOption(thinkingOption.id, requestedEffort)
-        .pipe(Effect.mapError(input.mapError));
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("PrimeAgent thinking-level selection skipped.", { cause }),
+          ),
+        );
     }
 
     return boundModelId;
