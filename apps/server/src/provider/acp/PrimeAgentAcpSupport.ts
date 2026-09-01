@@ -8,6 +8,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 
+import { collectSessionConfigOptionValues } from "./AcpRuntimeModel.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 
 // Prime Agent's ACP surface does not expose an `authenticate` method:
@@ -26,8 +27,10 @@ interface PrimeAgentAcpRuntimeInput extends Omit<
   readonly primeAgentSettings: PrimeAgentAcpRuntimePrimeAgentSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
   readonly runtimeMode?: RuntimeMode;
-  /** Model to pin via `--model` at spawn; ACP-level set_model is unsupported. */
+  /** Model to pin via `--model` at spawn; later switches use config options. */
   readonly modelId?: string | undefined;
+  /** Initial thinking level via `--thinking`; later switches use config options. */
+  readonly thinkingLevel?: string | undefined;
   /**
    * Directory Prime Agent stores its session JSONL in (`--session-dir`).
    * The adapter passes a per-thread directory so `--continue` can find the
@@ -55,14 +58,17 @@ interface PrimeAgentAcpRuntimeInput extends Omit<
 }
 
 /**
- * Prime Agent's ACP mode has no permission-mode CLI flags: the agent's tool
- * is a trusted Python REPL ("a trusted-code boundary, not a sandbox" per its
- * ACP docs), so every runtime mode maps to the same invocation. Model and
- * session resume cannot be changed over ACP (`session/set_model` and
- * `session/load` are unsupported), so both ride on argv at spawn time.
+ * Model, thinking level, and session resume ride on argv at spawn time; a
+ * patched build (>= the acp-config-options branch) can then move model and
+ * thinking mid-session via `session/set_config_option`. `--approval` gates
+ * every tool call behind `session/request_permission`, which is how T3's
+ * `approval-required` runtime mode becomes real: without it the agent's tool
+ * is a trusted Python REPL that runs everything unasked.
  */
 export function primeAgentAcpSpawnArgs(options?: {
   readonly modelId?: string | undefined;
+  readonly thinkingLevel?: string | undefined;
+  readonly approval?: boolean | undefined;
   readonly sessionDir?: string | undefined;
   readonly continueConversation?: boolean | undefined;
   readonly noSession?: boolean | undefined;
@@ -71,6 +77,12 @@ export function primeAgentAcpSpawnArgs(options?: {
     "--mode",
     "acp",
     ...(options?.modelId ? ["--model", options.modelId] : []),
+    ...(options?.thinkingLevel ? ["--thinking", options.thinkingLevel] : []),
+    // Unknown flags land in prime-agent's tolerated unknown-flag map, so a
+    // pre-approval binary starts fine and simply never asks. The adapter's
+    // permission handler then never fires, which degrades approval-required
+    // to full access rather than breaking the thread.
+    ...(options?.approval ? ["--approval"] : []),
     ...(options?.sessionDir ? ["--session-dir", options.sessionDir] : []),
     // `--continue` falls back to a fresh session when the directory holds no
     // matching session, so a lost session file degrades to a new
@@ -86,6 +98,8 @@ export function buildPrimeAgentAcpSpawnInput(
   environment?: NodeJS.ProcessEnv,
   options?: {
     readonly modelId?: string | undefined;
+    readonly thinkingLevel?: string | undefined;
+    readonly approval?: boolean | undefined;
     readonly sessionDir?: string | undefined;
     readonly continueConversation?: boolean | undefined;
     readonly noSession?: boolean | undefined;
@@ -109,7 +123,8 @@ export const makePrimeAgentAcpRuntime = (
   Crypto.Crypto | Scope.Scope
 > =>
   Effect.gen(function* () {
-    const { modelId, sessionDir, continueConversation, noSession, ...runtimeInput } = input;
+    const { modelId, thinkingLevel, sessionDir, continueConversation, noSession, ...runtimeInput } =
+      input;
     const acpContext = yield* Layer.build(
       AcpSessionRuntime.layer({
         ...runtimeInput,
@@ -119,6 +134,8 @@ export const makePrimeAgentAcpRuntime = (
           input.environment,
           {
             modelId,
+            thinkingLevel,
+            approval: input.runtimeMode === "approval-required",
             sessionDir,
             continueConversation,
             noSession,
@@ -154,13 +171,39 @@ export function normalizePrimeAgentReasoningEffort(value: string | undefined): s
   return effort && isValidPrimeAgentReasoningEffortToken(effort) ? effort : undefined;
 }
 
+function findPrimeAgentConfigOptionByCategory(
+  configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption> | null | undefined,
+  category: "model" | "thought_level",
+): EffectAcpSchema.SessionConfigOption | undefined {
+  return configOptions?.find((option) => option.category === category);
+}
+
+function configOptionCurrentValue(
+  option: EffectAcpSchema.SessionConfigOption | undefined,
+): string | undefined {
+  if (option?.type !== "select") {
+    return undefined;
+  }
+  const value = option.currentValue?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
 export function currentPrimeAgentModelIdFromSessionSetup(
   sessionSetupResult:
     | EffectAcpSchema.LoadSessionResponse
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse,
 ): string | undefined {
-  return sessionSetupResult.models?.currentModelId?.trim() || undefined;
+  // A patched prime-agent reports the session model as a `model`-category
+  // config option (values are `provider/model-id`, the `--model` pattern
+  // form). The legacy `models` state never shipped in prime-agent but stays
+  // as a fallback for spec-faithful builds.
+  return (
+    configOptionCurrentValue(
+      findPrimeAgentConfigOptionByCategory(sessionSetupResult.configOptions, "model"),
+    ) ??
+    (sessionSetupResult.models?.currentModelId?.trim() || undefined)
+  );
 }
 
 export function currentPrimeAgentReasoningEffortFromSessionSetup(
@@ -169,6 +212,12 @@ export function currentPrimeAgentReasoningEffortFromSessionSetup(
     | EffectAcpSchema.NewSessionResponse
     | EffectAcpSchema.ResumeSessionResponse,
 ): string | undefined {
+  const fromConfigOption = configOptionCurrentValue(
+    findPrimeAgentConfigOptionByCategory(sessionSetupResult.configOptions, "thought_level"),
+  );
+  if (fromConfigOption) {
+    return normalizePrimeAgentReasoningEffort(fromConfigOption);
+  }
   const modelState = sessionSetupResult.models;
   if (!modelState) {
     return undefined;
@@ -187,18 +236,51 @@ export function currentPrimeAgentReasoningEffortFromSessionSetup(
 }
 
 export function applyPrimeAgentAcpModelSelection<E>(input: {
-  readonly runtime: Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "setSessionModel">;
+  readonly runtime: Pick<
+    AcpSessionRuntime.AcpSessionRuntime["Service"],
+    "getConfigOptions" | "setConfigOption"
+  >;
   readonly currentModelId: string | undefined;
   readonly currentReasoningEffort?: string | undefined;
   readonly requestedModelId: string | undefined;
   readonly requestedReasoningEffort?: string | undefined;
   readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
 }): Effect.Effect<string | undefined, E> {
-  // Prime Agent does not support `session/set_model`: the model is fixed at
-  // process startup via `--model`. When the session already reports a model
-  // (via `session/new`'s optional model state) it wins; otherwise the
-  // requested model is assumed to be the one pinned on argv. A mid-session
-  // model change therefore requires a session restart, which the adapter's
-  // resume path performs on the next turn with a different selection.
-  return Effect.succeed(input.currentModelId ?? input.requestedModelId);
+  // A patched prime-agent exposes `model` and `thought_level` config options,
+  // so both switch in-session via `session/set_config_option` (the runtime
+  // no-ops when the value already matches). A stock 0.8.1 binary reports no
+  // config options at all; there the selection silently keeps the model the
+  // process was spawned with — the same model the thread was already using.
+  // Requested values outside the advertised catalog are skipped rather than
+  // failing the turn: a stale client picker must not kill a healthy session.
+  return Effect.gen(function* () {
+    const configOptions = yield* input.runtime.getConfigOptions;
+    let boundModelId = input.currentModelId ?? input.requestedModelId;
+
+    const modelOption = findPrimeAgentConfigOptionByCategory(configOptions, "model");
+    if (
+      modelOption &&
+      input.requestedModelId &&
+      collectSessionConfigOptionValues(modelOption).includes(input.requestedModelId)
+    ) {
+      yield* input.runtime
+        .setConfigOption(modelOption.id, input.requestedModelId)
+        .pipe(Effect.mapError(input.mapError));
+      boundModelId = input.requestedModelId;
+    }
+
+    const thinkingOption = findPrimeAgentConfigOptionByCategory(configOptions, "thought_level");
+    const requestedEffort = normalizePrimeAgentReasoningEffort(input.requestedReasoningEffort);
+    if (
+      thinkingOption &&
+      requestedEffort &&
+      collectSessionConfigOptionValues(thinkingOption).includes(requestedEffort)
+    ) {
+      yield* input.runtime
+        .setConfigOption(thinkingOption.id, requestedEffort)
+        .pipe(Effect.mapError(input.mapError));
+    }
+
+    return boundModelId;
+  });
 }

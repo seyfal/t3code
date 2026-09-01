@@ -16,6 +16,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
+  buildSelectOptionDescriptor,
   buildServerProvider,
   isCommandMissingCause,
   parseGenericCliVersion,
@@ -33,14 +34,32 @@ const PRIME_AGENT_PRESENTATION = {
   displayName: "Prime Agent",
   badgeLabel: "Early Access",
   showInteractionModeToggle: false,
-  // Prime Agent's ACP mode never sends `session/request_permission` (its
-  // tool is a trusted Python REPL, "a trusted-code boundary, not a
-  // sandbox"), so approval-based runtime modes cannot gate anything.
-  // Advertise the one mode that tells the truth.
-  supportedRuntimeModes: ["full-access"],
+  // Prime Agent has one tool: a Python REPL that runs arbitrary code, so
+  // T3's edits-vs-commands split cannot map. Two modes tell the truth:
+  // `approval-required` spawns the agent with `--approval` (every tool call
+  // becomes a `session/request_permission` round trip; needs a prime-agent
+  // build with the acp-config-options/approval patch — an older binary
+  // ignores the flag and behaves like full access), and `full-access` runs
+  // everything unasked, the agent's native behavior.
+  supportedRuntimeModes: ["approval-required", "full-access"],
 } as const;
-const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
-  optionDescriptors: [],
+// prime-agent's global thinking levels (`--thinking`, `setThinkingLevel`).
+// The adapter maps this option to the session's `thought_level` config
+// option in-session, and to `--thinking` at spawn.
+const PRIME_AGENT_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+const PRIME_AGENT_DEFAULT_THINKING_LEVEL = "medium";
+const PRIME_AGENT_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [
+    buildSelectOptionDescriptor({
+      id: "reasoningEffort",
+      label: "Thinking",
+      options: PRIME_AGENT_THINKING_LEVELS.map((level) => ({
+        value: level,
+        label: level,
+        ...(level === PRIME_AGENT_DEFAULT_THINKING_LEVEL ? { isDefault: true } : {}),
+      })),
+    }),
+  ],
 });
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
@@ -56,7 +75,7 @@ const PRIME_AGENT_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     slug: "sonnet",
     name: "Claude Sonnet (via Prime Agent)",
     isCustom: false,
-    capabilities: EMPTY_CAPABILITIES,
+    capabilities: PRIME_AGENT_MODEL_CAPABILITIES,
   },
 ];
 
@@ -103,7 +122,11 @@ function primeAgentModelsFromSettings(
   customModels: ReadonlyArray<string> | undefined,
   builtInModels: ReadonlyArray<ServerProviderModel> = PRIME_AGENT_BUILT_IN_MODELS,
 ): ReadonlyArray<ServerProviderModel> {
-  return providerModelsFromSettings(builtInModels, customModels ?? [], EMPTY_CAPABILITIES);
+  return providerModelsFromSettings(
+    builtInModels,
+    customModels ?? [],
+    PRIME_AGENT_MODEL_CAPABILITIES,
+  );
 }
 
 /**
@@ -139,7 +162,7 @@ export function parsePrimeAgentModelListOutput(output: string): ReadonlyArray<Se
       slug,
       name: slug,
       isCustom: false,
-      capabilities: EMPTY_CAPABILITIES,
+      capabilities: PRIME_AGENT_MODEL_CAPABILITIES,
     });
   }
   return models;

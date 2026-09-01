@@ -6,6 +6,8 @@ import type * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import {
   applyPrimeAgentAcpModelSelection,
   buildPrimeAgentAcpSpawnInput,
+  currentPrimeAgentModelIdFromSessionSetup,
+  currentPrimeAgentReasoningEffortFromSessionSetup,
   primeAgentAcpSpawnArgs,
   resolvePrimeAgentAcpBaseModelId,
 } from "./PrimeAgentAcpSupport.ts";
@@ -31,6 +33,8 @@ describe("primeAgentAcpSpawnArgs", () => {
     expect(
       primeAgentAcpSpawnArgs({
         modelId: "sonnet",
+        thinkingLevel: "high",
+        approval: true,
         sessionDir: "/state/prime-agent-sessions/thread-1",
         continueConversation: true,
       }),
@@ -39,6 +43,9 @@ describe("primeAgentAcpSpawnArgs", () => {
       "acp",
       "--model",
       "sonnet",
+      "--thinking",
+      "high",
+      "--approval",
       "--session-dir",
       "/state/prime-agent-sessions/thread-1",
       "--continue",
@@ -75,17 +82,93 @@ describe("resolvePrimeAgentAcpBaseModelId", () => {
   });
 });
 
+function modelConfigOption(
+  currentValue: string,
+  values: ReadonlyArray<string>,
+): EffectAcpSchema.SessionConfigOption {
+  return {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue,
+    options: values.map((value) => ({ value, name: value })),
+  } as EffectAcpSchema.SessionConfigOption;
+}
+
+function thinkingConfigOption(currentValue: string): EffectAcpSchema.SessionConfigOption {
+  return {
+    id: "thinking",
+    name: "Thinking",
+    category: "thought_level",
+    type: "select",
+    currentValue,
+    options: ["off", "low", "medium", "high"].map((value) => ({ value, name: value })),
+  } as EffectAcpSchema.SessionConfigOption;
+}
+
+function selectionRuntime(configOptions: ReadonlyArray<EffectAcpSchema.SessionConfigOption>) {
+  const setCalls: Array<{ configId: string; value: string | boolean }> = [];
+  const runtime = {
+    getConfigOptions: Effect.succeed(configOptions),
+    setConfigOption: (configId: string, value: string | boolean) =>
+      Effect.sync(() => {
+        setCalls.push({ configId, value });
+        return { configOptions } as EffectAcpSchema.SetSessionConfigOptionResponse;
+      }),
+  } satisfies Pick<
+    AcpSessionRuntime.AcpSessionRuntime["Service"],
+    "getConfigOptions" | "setConfigOption"
+  >;
+  return { runtime, setCalls };
+}
+
 describe("applyPrimeAgentAcpModelSelection", () => {
-  it.effect("never calls session/set_model and reports the effective model", () =>
+  it.effect("switches model and thinking through advertised config options", () =>
     Effect.gen(function* () {
-      let setSessionModelCalls = 0;
-      const runtime = {
-        setSessionModel: (_modelId: string) =>
-          Effect.sync(() => {
-            setSessionModelCalls += 1;
-            return {} as EffectAcpSchema.SetSessionModelResponse;
-          }),
-      } satisfies Pick<AcpSessionRuntime.AcpSessionRuntime["Service"], "setSessionModel">;
+      const { runtime, setCalls } = selectionRuntime([
+        modelConfigOption("a/model-one", ["a/model-one", "b/sub/model-two"]),
+        thinkingConfigOption("medium"),
+      ]);
+
+      const bound = yield* applyPrimeAgentAcpModelSelection({
+        runtime,
+        currentModelId: "a/model-one",
+        currentReasoningEffort: "medium",
+        requestedModelId: "b/sub/model-two",
+        requestedReasoningEffort: "high",
+        mapError: (cause) => cause,
+      });
+      expect(bound).toBe("b/sub/model-two");
+      expect(setCalls).toEqual([
+        { configId: "model", value: "b/sub/model-two" },
+        { configId: "thinking", value: "high" },
+      ]);
+    }),
+  );
+
+  it.effect("skips values outside the advertised catalog instead of failing the turn", () =>
+    Effect.gen(function* () {
+      const { runtime, setCalls } = selectionRuntime([
+        modelConfigOption("a/model-one", ["a/model-one"]),
+        thinkingConfigOption("medium"),
+      ]);
+
+      const bound = yield* applyPrimeAgentAcpModelSelection({
+        runtime,
+        currentModelId: "a/model-one",
+        requestedModelId: "not/in-catalog",
+        requestedReasoningEffort: "xhigh",
+        mapError: (cause) => cause,
+      });
+      expect(bound).toBe("a/model-one");
+      expect(setCalls).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps the spawn-time model on a binary without config options", () =>
+    Effect.gen(function* () {
+      const { runtime, setCalls } = selectionRuntime([]);
 
       const sessionWins = yield* applyPrimeAgentAcpModelSelection({
         runtime,
@@ -102,7 +185,25 @@ describe("applyPrimeAgentAcpModelSelection", () => {
         mapError: (cause) => cause,
       });
       expect(requestedFallback).toBe("requested");
-      expect(setSessionModelCalls).toBe(0);
+      expect(setCalls).toEqual([]);
     }),
   );
+});
+
+describe("session setup readers", () => {
+  it("reads the current model and thinking level from config options", () => {
+    const setup = {
+      sessionId: "s1",
+      configOptions: [
+        modelConfigOption("a/model-one", ["a/model-one"]),
+        thinkingConfigOption("high"),
+      ],
+    } as unknown as EffectAcpSchema.NewSessionResponse;
+    expect(currentPrimeAgentModelIdFromSessionSetup(setup)).toBe("a/model-one");
+    expect(currentPrimeAgentReasoningEffortFromSessionSetup(setup)).toBe("high");
+
+    const bare = { sessionId: "s2" } as unknown as EffectAcpSchema.NewSessionResponse;
+    expect(currentPrimeAgentModelIdFromSessionSetup(bare)).toBeUndefined();
+    expect(currentPrimeAgentReasoningEffortFromSessionSetup(bare)).toBeUndefined();
+  });
 });

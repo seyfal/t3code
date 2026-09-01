@@ -949,6 +949,9 @@ export function makePrimeAgentAdapter(
           const spawnModelId = primeAgentModelSelection?.model
             ? resolvePrimeAgentAcpBaseModelId(primeAgentModelSelection.model)
             : undefined;
+          const spawnReasoningEffort = normalizePrimeAgentReasoningEffort(
+            getModelSelectionStringOptionValue(primeAgentModelSelection, "reasoningEffort"),
+          );
           const acp = yield* makePrimeAgentAcpRuntime({
             primeAgentSettings,
             ...(options?.environment ? { environment: options.environment } : {}),
@@ -956,6 +959,7 @@ export function makePrimeAgentAdapter(
             cwd,
             runtimeMode: input.runtimeMode,
             ...(spawnModelId ? { modelId: spawnModelId } : {}),
+            ...(spawnReasoningEffort ? { thinkingLevel: spawnReasoningEffort } : {}),
             sessionDir,
             ...(hasPriorSession || sessionDirHasSession ? { continueConversation: true } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
@@ -1901,11 +1905,12 @@ export function makePrimeAgentAdapter(
 
     return {
       provider: PROVIDER,
-      // Prime Agent has no `session/set_model`; the model is pinned on argv
-      // at spawn. Declaring "unsupported" makes ProviderCommandReactor
-      // restart the session when a turn carries a different model, which is
-      // the only way the new `--model` can take effect.
-      capabilities: { sessionModelSwitch: "unsupported" },
+      // A patched prime-agent (acp-config-options) reports a `model` config
+      // option, so sendTurn switches models in place via
+      // `session/set_config_option` with no session restart. On a stock
+      // 0.8.1 binary the option is absent and the selection quietly keeps
+      // the spawn-time model — pair this capability with the patched build.
+      capabilities: { sessionModelSwitch: "in-session" },
       startSession,
       sendTurn,
       interruptTurn,
