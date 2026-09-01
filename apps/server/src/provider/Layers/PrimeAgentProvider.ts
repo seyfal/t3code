@@ -145,6 +145,23 @@ export function parsePrimeAgentModelListOutput(output: string): ReadonlyArray<Se
   return models;
 }
 
+const PRIME_AGENT_MIN_ACP_VERSION = "0.8.0";
+
+/**
+ * True when the reported version is >= 0.8.0, the first release line with
+ * `--mode acp`. Unparseable version strings return true so an unknown
+ * future scheme degrades to trying ACP rather than blocking it.
+ */
+export function primeAgentVersionSupportsAcp(version: string): boolean {
+  const match = /^(\d+)\.(\d+)/.exec(version.trim());
+  if (!match) {
+    return true;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 0 || (major === 0 && minor >= 8);
+}
+
 const runPrimeAgentCommand = (
   primeAgentSettings: PrimeAgentSettings,
   args: ReadonlyArray<string>,
@@ -256,6 +273,26 @@ export const checkPrimeAgentProviderStatus = Effect.fn("checkPrimeAgentProviderS
         status: "error",
         auth: { status: "unknown" },
         message: "Prime Agent CLI is installed but failed to run.",
+      },
+    });
+  }
+
+  // ACP mode only exists from the versioned 0.8.x releases on; the
+  // npm-published `pi` lineage (0.84.x) predates it and knows only
+  // text/json/rpc. Failing here with a clear message beats a confusing
+  // spawn error at the first turn.
+  if (version !== null && !primeAgentVersionSupportsAcp(version)) {
+    return buildServerProvider({
+      presentation: PRIME_AGENT_PRESENTATION,
+      enabled: primeAgentSettings.enabled,
+      checkedAt,
+      models: fallbackModels,
+      probe: {
+        installed: true,
+        version,
+        status: "error",
+        auth: { status: "unknown" },
+        message: `Prime Agent ${version} has no ACP mode. Install prime-agent >= ${PRIME_AGENT_MIN_ACP_VERSION} (the npm-published pi package predates ACP support).`,
       },
     });
   }

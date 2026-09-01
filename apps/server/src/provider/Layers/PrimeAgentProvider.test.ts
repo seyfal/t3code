@@ -1,6 +1,21 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { parsePrimeAgentModelListOutput } from "./PrimeAgentProvider.ts";
+import {
+  parsePrimeAgentModelListOutput,
+  primeAgentVersionSupportsAcp,
+} from "./PrimeAgentProvider.ts";
+
+describe("primeAgentVersionSupportsAcp", () => {
+  it("gates on the 0.8.0 ACP floor and lets unknown schemes through", () => {
+    expect(primeAgentVersionSupportsAcp("0.8.1")).toBe(true);
+    expect(primeAgentVersionSupportsAcp("1.0.0")).toBe(true);
+    expect(primeAgentVersionSupportsAcp("0.7.2")).toBe(false);
+    // The npm-published pi lineage reports 0.84.x — and 84 >= 8, which is
+    // correct only by accident of the shared version scheme; the real gate
+    // for that package is its missing `--mode acp`, caught at spawn.
+    expect(primeAgentVersionSupportsAcp("nonsense")).toBe(true);
+  });
+});
 
 describe("parsePrimeAgentModelListOutput", () => {
   it("parses the padded table into provider/id slugs", () => {
