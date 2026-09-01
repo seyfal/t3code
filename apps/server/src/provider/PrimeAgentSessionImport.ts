@@ -9,10 +9,12 @@
  * 2. creates a thread and backfills the conversation's user/assistant text
  *    through the `thread.transcript.import` command (plain
  *    `thread.message-sent` events, so every client renders it natively), and
- * 3. copies the session file into the thread's per-thread session directory,
- *    where the adapter's `--session-dir` + `--continue` picks it up — the
- *    next turn continues the conversation with the agent's full context,
- *    including tool output the backfill deliberately skips.
+ * 3. symlinks the original session file into the thread's per-thread session
+ *    directory, where the adapter's `--session-dir` + `--continue` picks it
+ *    up — the next turn continues the conversation with the agent's full
+ *    native context. Because it is a symlink (copy only as a fallback), the
+ *    TUI and T3 keep writing the same file, and PrimeAgentSessionSync can
+ *    backfill entries the other interface adds later.
  *
  * Imports are recorded in `<stateDir>/prime-agent-imports.json` keyed by the
  * source session id, so a session imports exactly once.
@@ -54,6 +56,26 @@ const IMPORT_REGISTRY_FILE = "prime-agent-imports.json";
 const IMPORT_CHUNK_SIZE = 200;
 const TITLE_MAX_LENGTH = 80;
 
+/**
+ * The agent's own session root, shared with the TUI. Same resolution the
+ * usage scanner uses: explicit session-dir override, else the agent home
+ * override, else `~/.prime/agent/sessions`.
+ */
+export function resolvePrimeAgentSharedSessionDir(
+  hostEnvironment: Record<string, string | undefined>,
+  path: Pick<Path.Path, "resolve" | "join">,
+): string {
+  const primeSessionDirEnv = hostEnvironment["PRIME_AGENT_SESSION_DIR"]?.trim() ?? "";
+  const primeAgentHomeEnv = hostEnvironment["PRIME_AGENT_CODING_AGENT_DIR"]?.trim() ?? "";
+  const primeAgentHome =
+    primeAgentHomeEnv.length > 0
+      ? path.resolve(expandHomePath(primeAgentHomeEnv))
+      : path.join(NodeOS.homedir(), ".prime", "agent");
+  return primeSessionDirEnv.length > 0
+    ? path.resolve(expandHomePath(primeSessionDirEnv))
+    : path.join(primeAgentHome, "sessions");
+}
+
 export class PrimeAgentSessionImport extends Context.Service<
   PrimeAgentSessionImport,
   {
@@ -88,9 +110,84 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Tool outputs can be megabytes of logs; cap what gets rendered per block. */
+const TOOL_OUTPUT_RENDER_CAP = 2_000;
+
+function truncateOutput(output: string): string {
+  const trimmed = output.trim();
+  if (trimmed.length <= TOOL_OUTPUT_RENDER_CAP) {
+    return trimmed;
+  }
+  const omitted = trimmed.length - TOOL_OUTPUT_RENDER_CAP;
+  return `${trimmed.slice(0, TOOL_OUTPUT_RENDER_CAP)}\n… (+${omitted} more characters)`;
+}
+
+function fence(language: string, body: string): string {
+  // Widen the fence when the body itself contains backtick runs.
+  const longestRun = body.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+  const marker = "`".repeat(Math.max(3, longestRun + 1));
+  return `${marker}${language}\n${body}\n${marker}`;
+}
+
+function quoteBlock(label: string, body: string): string {
+  const quoted = body
+    .trim()
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return `> **${label}**\n${quoted}`;
+}
+
+/**
+ * Renders one message's content blocks as markdown, keeping the agent's
+ * actual activity visible: thinking as quotes, tool calls as code blocks.
+ * Returns "" when nothing renderable is present.
+ */
 function textFromContent(content: unknown): string {
   if (typeof content === "string") {
     return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  const parts: Array<string> = [];
+  for (const item of content) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    if (item.type === "text" && typeof item.text === "string") {
+      const trimmed = item.text.trim();
+      if (trimmed.length > 0) {
+        parts.push(trimmed);
+      }
+      continue;
+    }
+    if (item.type === "thinking" && typeof item.thinking === "string") {
+      const trimmed = item.thinking.trim();
+      if (trimmed.length > 0) {
+        parts.push(quoteBlock("Thinking", trimmed));
+      }
+      continue;
+    }
+    if (item.type === "toolCall" && typeof item.name === "string") {
+      const args = isRecord(item.arguments) ? item.arguments : {};
+      // prime-agent's primary tool is the ipython kernel; render its code
+      // directly. Other tools render as name(arguments).
+      if (typeof args.code === "string" && args.code.trim().length > 0) {
+        parts.push(fence("python", args.code.trim()));
+      } else {
+        parts.push(fence("", `${item.name}(${JSON.stringify(item.arguments ?? {})})`));
+      }
+    }
+  }
+  return parts.join("\n\n").trim();
+}
+
+/** Renders a toolResult message's content as a capped output block. */
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    return trimmed.length > 0 ? fence("", truncateOutput(trimmed)) : "";
   }
   if (!Array.isArray(content)) {
     return "";
@@ -104,7 +201,8 @@ function textFromContent(content: unknown): string {
       }
     }
   }
-  return parts.join("\n\n").trim();
+  const joined = parts.join("\n\n").trim();
+  return joined.length > 0 ? fence("", truncateOutput(joined)) : "";
 }
 
 /**
@@ -119,7 +217,7 @@ export function parsePrimeAgentSessionFile(raw: string): ParsedPrimeSession | un
     | undefined;
   let name: string | null = null;
   let lastModelSlug: string | null = null;
-  const messages: Array<ParsedPrimeSessionMessage> = [];
+  const messages: Array<{ role: "user" | "assistant"; text: string; timestamp: string }> = [];
 
   for (const line of lines) {
     const trimmedLine = line.trim();
@@ -165,6 +263,35 @@ export function parsePrimeAgentSessionFile(raw: string): ParsedPrimeSession | un
     }
     const message = entry.message;
     const role = message.role;
+    // A tool result belongs to the assistant message whose tool call produced
+    // it: append its (capped) output to that message instead of adding a row.
+    if (role === "toolResult") {
+      const output = toolResultText(message.content);
+      const previous = messages[messages.length - 1];
+      if (output.length > 0 && previous && previous.role === "assistant") {
+        previous.text = `${previous.text}\n\n${output}`;
+      }
+      continue;
+    }
+    // Commands the user ran directly in the TUI (`!command`) are part of the
+    // conversation's shared context; render them as user messages.
+    if (role === "bashExecution") {
+      const command = typeof message.command === "string" ? message.command.trim() : "";
+      if (command.length === 0) {
+        continue;
+      }
+      const output = typeof message.output === "string" ? message.output.trim() : "";
+      const body =
+        output.length > 0
+          ? `${fence("bash", command)}\n\n${fence("", truncateOutput(output))}`
+          : fence("bash", command);
+      messages.push({
+        role: "user",
+        text: body,
+        timestamp: typeof entry.timestamp === "string" ? entry.timestamp : "",
+      });
+      continue;
+    }
     if (role !== "user" && role !== "assistant") {
       continue;
     }
@@ -230,17 +357,7 @@ export const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
 
-  // Same resolution the usage scanner uses for the agent's own session root.
-  const primeSessionDirEnv = hostEnvironment["PRIME_AGENT_SESSION_DIR"]?.trim() ?? "";
-  const primeAgentHomeEnv = hostEnvironment["PRIME_AGENT_CODING_AGENT_DIR"]?.trim() ?? "";
-  const primeAgentHome =
-    primeAgentHomeEnv.length > 0
-      ? path.resolve(expandHomePath(primeAgentHomeEnv))
-      : path.join(NodeOS.homedir(), ".prime", "agent");
-  const sessionDir =
-    primeSessionDirEnv.length > 0
-      ? path.resolve(expandHomePath(primeSessionDirEnv))
-      : path.join(primeAgentHome, "sessions");
+  const sessionDir = resolvePrimeAgentSharedSessionDir(hostEnvironment, path);
   const registryPath = path.join(config.stateDir, IMPORT_REGISTRY_FILE);
 
   const readRegistry = Effect.gen(function* () {
@@ -464,16 +581,18 @@ export const make = Effect.gen(function* () {
 
       // Hand the original transcript to the adapter's per-thread session dir;
       // the next turn spawns with `--continue` and the agent resumes with its
-      // full native context.
+      // full native context. A symlink keeps the TUI and T3 on the same file
+      // (shared history both ways); copy stays as the fallback for
+      // filesystems that refuse symlinks.
       const threadSessionDir = path.join(config.stateDir, "prime-agent-sessions", threadId);
+      const linkTarget = path.join(threadSessionDir, path.basename(resolvedPath));
       yield* fileSystem.makeDirectory(threadSessionDir, { recursive: true }).pipe(
         Effect.flatMap(() =>
-          fileSystem.copyFile(
-            resolvedPath,
-            path.join(threadSessionDir, path.basename(resolvedPath)),
-          ),
+          fileSystem
+            .symlink(resolvedPath, linkTarget)
+            .pipe(Effect.catch(() => fileSystem.copyFile(resolvedPath, linkTarget))),
         ),
-        Effect.mapError(importFailed("Failed to copy the session file to the thread.")),
+        Effect.mapError(importFailed("Failed to link the session file to the thread.")),
       );
 
       yield* writeRegistry({

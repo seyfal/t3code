@@ -50,6 +50,7 @@ import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { PrimeAgentSessionSync } from "../../provider/PrimeAgentSessionSync.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
@@ -251,6 +252,15 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
+      Layer.provide(
+        Layer.succeed(
+          PrimeAgentSessionSync,
+          PrimeAgentSessionSync.of({
+            syncThread: () => Effect.succeed(0),
+            noteTurnCompleted: () => Effect.void,
+          }),
+        ),
+      ),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),

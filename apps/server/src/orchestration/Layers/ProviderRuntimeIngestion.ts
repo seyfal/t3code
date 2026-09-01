@@ -34,6 +34,7 @@ import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionT
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { PrimeAgentSessionSync } from "../../provider/PrimeAgentSessionSync.ts";
 import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
 import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -892,6 +893,7 @@ const make = Effect.gen(function* () {
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
+  const primeAgentSessionSync = yield* PrimeAgentSessionSync;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
@@ -1877,6 +1879,11 @@ const make = Effect.gen(function* () {
             updatedAt: now,
           });
         }
+        // Prime-agent threads share their session file with the TUI: move
+        // the sync cursor past the entries this turn just appended so the
+        // next sync backfills only foreign (TUI) activity. No-ops for other
+        // providers (one directory read).
+        yield* primeAgentSessionSync.noteTurnCompleted(thread.id);
       }
 
       if (event.type === "session.exited") {

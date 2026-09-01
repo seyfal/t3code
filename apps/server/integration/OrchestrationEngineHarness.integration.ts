@@ -24,6 +24,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as CheckpointStore from "../src/checkpointing/CheckpointStore.ts";
+import { PrimeAgentSessionSync } from "../src/provider/PrimeAgentSessionSync.ts";
 import { TextGeneration, type TextGenerationShape } from "../src/textGeneration/TextGeneration.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
@@ -388,6 +389,15 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(orchestrationReactorLayer),
       Layer.provideMerge(providerRegistryLayer),
       Layer.provide(persistenceLayer),
+      Layer.provide(
+        Layer.succeed(
+          PrimeAgentSessionSync,
+          PrimeAgentSessionSync.of({
+            syncThread: () => Effect.succeed(0),
+            noteTurnCompleted: () => Effect.void,
+          }),
+        ),
+      ),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),

@@ -56,6 +56,7 @@ import {
   ProviderCommandReactorLive,
 } from "./ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { PrimeAgentSessionSync } from "../../provider/PrimeAgentSessionSync.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -425,6 +426,15 @@ describe("ProviderCommandReactor", () => {
           generateBranchName,
           generateThreadTitle,
         }),
+      ),
+      Layer.provide(
+        Layer.succeed(
+          PrimeAgentSessionSync,
+          PrimeAgentSessionSync.of({
+            syncThread: () => Effect.succeed(0),
+            noteTurnCompleted: () => Effect.void,
+          }),
+        ),
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),

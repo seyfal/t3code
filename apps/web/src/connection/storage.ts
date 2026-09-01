@@ -55,8 +55,12 @@ const StoredShellSnapshotJson = Schema.fromJsonString(StoredShellSnapshot);
 // exists for rollback safety: a pre-pagination client would decode a windowed
 // v2 record, silently drop the unknown `page` field, and treat the partial
 // thread as complete forever. Older entries fail to decode → cold cache.
+// v4 invalidates windows cached while the server stranded turnless (imported)
+// messages older than the first turn; those messages sit below the cached
+// window's sequence, so catch-up can never backfill them — only a cold cache
+// re-fetches the corrected page.
 const StoredThreadSnapshot = Schema.Struct({
-  schemaVersion: Schema.Literal(3),
+  schemaVersion: Schema.Literal(4),
   environmentId: EnvironmentId,
   threadId: ThreadId,
   snapshot: OrchestrationThreadDetailSnapshot,

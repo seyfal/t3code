@@ -20,7 +20,9 @@ const SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
 // v3 adds windowed (paginated) snapshots carrying `page` metadata; the bump
 // makes pre-pagination clients discard the record instead of decoding a
 // partial thread as complete (rollback safety).
-const THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION = 3;
+// v4: drop windows cached while the server stranded turnless (imported)
+// messages older than the first turn; catch-up can never backfill those.
+const THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION = 4;
 const SERVER_CONFIG_CACHE_SCHEMA_VERSION = 1;
 const VCS_REFS_CACHE_SCHEMA_VERSION = 1;
 

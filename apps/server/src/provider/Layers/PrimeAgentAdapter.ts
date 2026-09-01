@@ -66,6 +66,7 @@ import {
   normalizePrimeAgentReasoningEffort,
   resolvePrimeAgentAcpBaseModelId,
 } from "../acp/PrimeAgentAcpSupport.ts";
+import { resolvePrimeAgentSharedSessionDir } from "../PrimeAgentSessionImport.ts";
 import { type PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
@@ -260,6 +261,25 @@ function parsePrimeAgentResume(raw: unknown): { sessionId: string } | undefined 
   if (raw.schemaVersion !== PRIME_AGENT_RESUME_VERSION) return undefined;
   if (typeof raw.sessionId !== "string" || !raw.sessionId.trim()) return undefined;
   return { sessionId: raw.sessionId.trim() };
+}
+
+/**
+ * The real on-disk session identity a patched prime-agent (>= the
+ * acp-config-options branch) reports in the `session/new` response `_meta`.
+ * A stock binary reports nothing; callers must treat this as best-effort.
+ */
+export function parsePrimeAgentSessionIdentityMeta(
+  meta: { readonly [key: string]: unknown } | null | undefined,
+): { sessionId?: string; sessionFile?: string } | undefined {
+  const payload = meta?.["ai.primeintellect.prime-agent"];
+  if (!isRecord(payload)) return undefined;
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId.trim() : "";
+  const sessionFile = typeof payload.sessionFile === "string" ? payload.sessionFile.trim() : "";
+  if (!sessionId && !sessionFile) return undefined;
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(sessionFile ? { sessionFile } : {}),
+  };
 }
 
 export function selectPrimeAgentPermissionOptionId(
@@ -921,7 +941,7 @@ export function makePrimeAgentAdapter(
           // the actual continuity comes from the per-thread `--session-dir`
           // plus `--continue` below.
           const hasPriorSession = parsePrimeAgentResume(input.resumeCursor) !== undefined;
-          const sessionDir = path.join(
+          const perThreadSessionDir = path.join(
             serverConfig.stateDir,
             "prime-agent-sessions",
             input.threadId,
@@ -935,10 +955,22 @@ export function makePrimeAgentAdapter(
           // different `--model`, matching what in-session-switch providers
           // give their users). `--continue` matches by the thread's cwd and
           // still degrades to a fresh session when nothing matches.
-          const sessionDirHasSession = yield* fileSystem.readDirectory(sessionDir).pipe(
+          const sessionDirHasSession = yield* fileSystem.readDirectory(perThreadSessionDir).pipe(
             Effect.map((entries) => entries.some((entry) => entry.endsWith(".jsonl"))),
             Effect.orElseSucceed(() => false),
           );
+          // A brand-new thread starts its session file in the agent's own
+          // shared session directory, so the conversation is visible to the
+          // TUI (`prime-agent --continue` / the session picker) from turn
+          // one. The per-thread dir then gets a symlink to it (below), so
+          // every later restart keeps today's `--session-dir` + `--continue`
+          // addressing. Existing threads keep their per-thread dir.
+          const useSharedSessionDir = !hasPriorSession && !sessionDirHasSession;
+          const sharedSessionDir = resolvePrimeAgentSharedSessionDir(
+            options?.environment ?? process.env,
+            path,
+          );
+          const sessionDir = useSharedSessionDir ? sharedSessionDir : perThreadSessionDir;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -1116,6 +1148,33 @@ export function makePrimeAgentAdapter(
               mapAcpToAdapterError(PROVIDER, input.threadId, "session/start", error),
             ),
           );
+
+          // Anchor a fresh shared-dir session to the thread: a symlink in the
+          // per-thread dir makes every later restart resume this exact file
+          // (and lets PrimeAgentSessionSync find it). Best-effort: a stock
+          // binary reports no session identity, and the thread still works —
+          // only cross-restart continuity and TUI sharing degrade.
+          if (useSharedSessionDir) {
+            const identity = parsePrimeAgentSessionIdentityMeta(started.sessionSetupResult._meta);
+            if (identity?.sessionFile) {
+              const sessionFile = identity.sessionFile;
+              yield* fileSystem.makeDirectory(perThreadSessionDir, { recursive: true }).pipe(
+                Effect.flatMap(() =>
+                  fileSystem.symlink(
+                    sessionFile,
+                    path.join(perThreadSessionDir, path.basename(sessionFile)),
+                  ),
+                ),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("PrimeAgent session symlink failed.", { cause }),
+                ),
+              );
+            } else {
+              yield* Effect.logWarning(
+                "PrimeAgent did not report its session file; this thread's session stays in the shared directory but may not survive a restart.",
+              );
+            }
+          }
 
           const requestedStartModelId = primeAgentModelSelection?.model
             ? resolvePrimeAgentAcpBaseModelId(primeAgentModelSelection.model)

@@ -35,6 +35,7 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { PrimeAgentSessionSync } from "../../provider/PrimeAgentSessionSync.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderCommandReactor,
@@ -313,6 +314,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const primeAgentSessionSync = yield* PrimeAgentSessionSync;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -1227,6 +1229,12 @@ const make = Effect.gen(function* () {
     if (Option.isNone(sendTurnRequest)) {
       return;
     }
+
+    // Write safety for prime-agent threads whose session file is shared with
+    // the TUI: entries the other interface appended are backfilled BEFORE the
+    // prompt goes out, so the turn builds on what the user already saw
+    // happen elsewhere. No-ops (one directory read) for every other thread.
+    yield* primeAgentSessionSync.syncThread(event.payload.threadId);
 
     yield* providerService
       .sendTurn(sendTurnRequest.value)

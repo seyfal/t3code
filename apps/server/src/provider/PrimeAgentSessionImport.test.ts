@@ -39,16 +39,34 @@ describe("parsePrimeAgentSessionFile", () => {
           content: [
             { type: "thinking", thinking: "pondering" },
             { type: "text", text: "hi there" },
-            { type: "toolCall", id: "t1", name: "ipython" },
+            { type: "toolCall", id: "t1", name: "ipython", arguments: { code: "print(6 * 7)" } },
           ],
         },
       }),
-      // Tool-only and errored assistant turns carry nothing to backfill.
+      line({
+        type: "message",
+        id: "m2r",
+        parentId: "m2",
+        timestamp: "2025-12-01T10:00:06.000Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "t1",
+          content: [{ type: "text", text: "42" }],
+        },
+      }),
+      line({
+        type: "message",
+        id: "m2b",
+        parentId: "m2r",
+        timestamp: "2025-12-01T10:00:07.000Z",
+        message: { role: "bashExecution", command: "ls", output: "a.txt" },
+      }),
+      // Errored assistant turns carry nothing to backfill.
       line({
         type: "message",
         id: "m3",
-        parentId: "m2",
-        timestamp: "2025-12-01T10:00:06.000Z",
+        parentId: "m2b",
+        timestamp: "2025-12-01T10:00:08.000Z",
         message: {
           role: "assistant",
           stopReason: "error",
@@ -74,7 +92,21 @@ describe("parsePrimeAgentSessionFile", () => {
     expect(parsed?.rlmDepth).toBe(0);
     expect(parsed?.messages).toEqual([
       { role: "user", text: "hello", timestamp: "2025-12-01T10:00:01.000Z" },
-      { role: "assistant", text: "hi there", timestamp: "2025-12-01T10:00:05.000Z" },
+      {
+        role: "assistant",
+        text: [
+          "> **Thinking**\n> pondering",
+          "hi there",
+          "```python\nprint(6 * 7)\n```",
+          "```\n42\n```",
+        ].join("\n\n"),
+        timestamp: "2025-12-01T10:00:05.000Z",
+      },
+      {
+        role: "user",
+        text: "```bash\nls\n```\n\n```\na.txt\n```",
+        timestamp: "2025-12-01T10:00:07.000Z",
+      },
     ]);
   });
 
