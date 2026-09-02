@@ -135,7 +135,10 @@ export const makePrimeAgentAcpRuntime = (
           {
             modelId,
             thinkingLevel,
-            approval: input.runtimeMode === "approval-required",
+            // Always gate through --approval: T3 auto-approves in full access
+            // (see PrimeAgentAdapter request_permission), and the flag forces the
+            // in-process runtime, so a wedged shared daemon cannot fail our turns.
+            approval: true,
             sessionDir,
             continueConversation,
             noSession,
