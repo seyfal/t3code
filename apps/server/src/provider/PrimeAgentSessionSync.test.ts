@@ -6,6 +6,7 @@ import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Stream from "effect/Stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterAll, beforeAll, describe, expect, it } from "@effect/vitest";
 
@@ -20,6 +21,15 @@ function sessionLine(entry: unknown): string {
   return `${JSON.stringify(entry)}\n`;
 }
 
+function assistantMessage(text: string, timestamp: string): string {
+  return sessionLine({
+    type: "message",
+    id: `a-${timestamp}`,
+    timestamp,
+    message: { role: "assistant", content: [{ type: "text", text }] },
+  });
+}
+
 function userMessage(text: string, timestamp: string): string {
   return sessionLine({
     type: "message",
@@ -31,7 +41,12 @@ function userMessage(text: string, timestamp: string): string {
 describe("PrimeAgentSessionSync", () => {
   let baseDir: string;
   let sessionFile: string;
-  let dispatched: Array<{ type: string; messages?: ReadonlyArray<{ messageId: string }> }>;
+  let dispatched: Array<{
+    type: string;
+    title?: string;
+    messages?: ReadonlyArray<{ messageId: string }>;
+  }>;
+  let namedTitle = "New thread";
   let runtime: ManagedRuntime.ManagedRuntime<PrimeAgentSessionSync, unknown>;
   let threadMessages: Array<{ id: string }>;
 
@@ -64,6 +79,7 @@ describe("PrimeAgentSessionSync", () => {
         dispatched.push(command as (typeof dispatched)[number]);
         return Effect.succeed({ sequence: dispatched.length });
       },
+      streamDomainEvents: Stream.never,
     } as unknown as OrchestrationEngine.OrchestrationEngineService["Service"]);
     const projectionStub = Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
       getCommandReadModel: () =>
@@ -79,6 +95,12 @@ describe("PrimeAgentSessionSync", () => {
             {
               id: "thread-sync-imported",
               messages: threadMessages,
+              session: null,
+            },
+            {
+              id: "thread-sync-named",
+              title: namedTitle,
+              messages: [],
               session: null,
             },
           ],
@@ -166,5 +188,131 @@ describe("PrimeAgentSessionSync", () => {
       (command) => command.messages?.map((message) => message.messageId) ?? [],
     );
     expect(ids).toContain("prime-import:sess-imported:1");
+  });
+
+  it("mirrors the session name into the thread title and a T3 title back into the file", async () => {
+    const namedThreadId = ThreadId.make("thread-sync-named");
+    const threadDir = NodePath.join(baseDir, "userdata", "prime-agent-sessions", namedThreadId);
+    NodeFS.mkdirSync(threadDir, { recursive: true });
+    const namedFile = NodePath.join(baseDir, "shared-sessions", "sess-named.jsonl");
+    NodeFS.writeFileSync(
+      namedFile,
+      sessionLine({
+        type: "session",
+        id: "sess-named",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        cwd: "/tmp/sync-project",
+      }) +
+        userMessage("hello", "2026-01-01T00:00:01.000Z") +
+        assistantMessage("hi", "2026-01-01T00:00:02.000Z") +
+        sessionLine({
+          type: "session_info",
+          id: "info-1",
+          parentId: "a-2026-01-01T00:00:02.000Z",
+          timestamp: "2026-01-01T00:00:03.000Z",
+          name: "Named in TUI",
+        }),
+    );
+    NodeFS.symlinkSync(namedFile, NodePath.join(threadDir, "sess-named.jsonl"));
+    const sync = await runtime.runPromise(Effect.service(PrimeAgentSessionSync));
+
+    // File name -> thread title.
+    dispatched.length = 0;
+    await runtime.runPromise(sync.syncThread(namedThreadId));
+    expect(dispatched.filter((command) => command.type === "thread.meta.update")).toEqual([
+      expect.objectContaining({ title: "Named in TUI" }),
+    ]);
+
+    // T3 title -> file, as a session_info entry parented to the last entry.
+    namedTitle = "Named in TUI";
+    await runtime.runPromise(sync.noteTitleChanged(namedThreadId, "Renamed in T3"));
+    const lines = NodeFS.readFileSync(namedFile, "utf8").trim().split("\n");
+    const appended = JSON.parse(lines[lines.length - 1] ?? "{}") as Record<string, unknown>;
+    expect(appended).toMatchObject({
+      type: "session_info",
+      parentId: "info-1",
+      name: "Renamed in T3",
+    });
+
+    // The same title again is not written twice; a sync does not bounce it.
+    namedTitle = "Renamed in T3";
+    dispatched.length = 0;
+    await runtime.runPromise(sync.noteTitleChanged(namedThreadId, "Renamed in T3"));
+    await runtime.runPromise(sync.syncThread(namedThreadId));
+    expect(NodeFS.readFileSync(namedFile, "utf8").trim().split("\n")).toHaveLength(lines.length);
+    expect(dispatched.filter((command) => command.type === "thread.meta.update")).toHaveLength(0);
+  });
+
+  it("holds a title until the file has an assistant message, then writes it", async () => {
+    const pendingThreadId = ThreadId.make("thread-sync-pending");
+    const threadDir = NodePath.join(baseDir, "userdata", "prime-agent-sessions", pendingThreadId);
+    NodeFS.mkdirSync(threadDir, { recursive: true });
+    const pendingFile = NodePath.join(baseDir, "shared-sessions", "sess-pending.jsonl");
+    NodeFS.writeFileSync(
+      pendingFile,
+      sessionLine({
+        type: "session",
+        id: "sess-pending",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        cwd: "/tmp/sync-project",
+      }) + userMessage("first question", "2026-01-01T00:00:01.000Z"),
+    );
+    NodeFS.symlinkSync(pendingFile, NodePath.join(threadDir, "sess-pending.jsonl"));
+    const sync = await runtime.runPromise(Effect.service(PrimeAgentSessionSync));
+
+    await runtime.runPromise(sync.noteTitleChanged(pendingThreadId, "Generated Title"));
+    expect(NodeFS.readFileSync(pendingFile, "utf8")).not.toContain("session_info");
+
+    NodeFS.appendFileSync(pendingFile, assistantMessage("answer", "2026-01-01T00:00:02.000Z"));
+    await runtime.runPromise(sync.noteTurnCompleted(pendingThreadId));
+    const lines = NodeFS.readFileSync(pendingFile, "utf8").trim().split("\n");
+    expect(JSON.parse(lines[lines.length - 1] ?? "{}")).toMatchObject({
+      type: "session_info",
+      parentId: "a-2026-01-01T00:00:02.000Z",
+      name: "Generated Title",
+    });
+    const state = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(baseDir, "userdata", "prime-agent-sync.json"), "utf8"),
+    ) as Record<string, { pendingName?: string }>;
+    expect(state[pendingThreadId]?.pendingName).toBeUndefined();
+  });
+
+  it("forgetThread removes a linked session file, a private copy only for itself", async () => {
+    const sync = await runtime.runPromise(Effect.service(PrimeAgentSessionSync));
+    const stateDir = NodePath.join(baseDir, "userdata");
+
+    // Linked thread: the shared file, its artifacts and the link dir go.
+    const linkedThreadId = ThreadId.make("thread-sync-named");
+    const linkedFile = NodePath.join(baseDir, "shared-sessions", "sess-named.jsonl");
+    const artifacts = NodePath.join(baseDir, "session-artifacts", "sess-named");
+    NodeFS.mkdirSync(artifacts, { recursive: true });
+    NodeFS.writeFileSync(
+      NodePath.join(stateDir, "prime-agent-imports.json"),
+      JSON.stringify({
+        "sess-named": { threadId: linkedThreadId, importedAt: "2026-01-01T00:00:00.000Z" },
+        "sess-other": { threadId: "someone-else", importedAt: "2026-01-01T00:00:00.000Z" },
+      }),
+    );
+    await runtime.runPromise(sync.forgetThread(linkedThreadId));
+    expect(NodeFS.existsSync(linkedFile)).toBe(false);
+    expect(NodeFS.existsSync(artifacts)).toBe(false);
+    expect(
+      NodeFS.existsSync(NodePath.join(stateDir, "prime-agent-sessions", linkedThreadId)),
+    ).toBe(false);
+    expect(
+      JSON.parse(NodeFS.readFileSync(NodePath.join(stateDir, "prime-agent-imports.json"), "utf8")),
+    ).toEqual({
+      "sess-other": { threadId: "someone-else", importedAt: "2026-01-01T00:00:00.000Z" },
+    });
+
+    // Copy thread: only the copy goes; the original in the shared dir stays.
+    const copyThreadId = ThreadId.make("thread-sync-copy");
+    const copyDir = NodePath.join(stateDir, "prime-agent-sessions", copyThreadId);
+    NodeFS.mkdirSync(copyDir, { recursive: true });
+    const original = NodePath.join(baseDir, "shared-sessions", "sess-sync.jsonl");
+    NodeFS.copyFileSync(original, NodePath.join(copyDir, "sess-sync.jsonl"));
+    await runtime.runPromise(sync.forgetThread(copyThreadId));
+    expect(NodeFS.existsSync(copyDir)).toBe(false);
+    expect(NodeFS.existsSync(original)).toBe(true);
   });
 });

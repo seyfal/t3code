@@ -16,6 +16,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vite-plus/test";
 
+import { PrimeAgentSessionSync } from "../../provider/PrimeAgentSessionSync.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -111,6 +112,17 @@ describe("ThreadDeletionReactor drain", () => {
       const layer = ThreadDeletionReactorLive.pipe(
         Layer.provide(Layer.succeed(ProviderService, providerService)),
         Layer.provide(Layer.succeed(TerminalManager.TerminalManager, terminalManager)),
+        Layer.provide(
+          Layer.succeed(
+            PrimeAgentSessionSync,
+            PrimeAgentSessionSync.of({
+              syncThread: () => Effect.succeed(0),
+              noteTurnCompleted: () => Effect.void,
+              noteTitleChanged: () => Effect.void,
+              forgetThread: () => Effect.void,
+            }),
+          ),
+        ),
         Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
       );
 

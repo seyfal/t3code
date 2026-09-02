@@ -258,6 +258,8 @@ describe("ProviderRuntimeIngestion", () => {
           PrimeAgentSessionSync.of({
             syncThread: () => Effect.succeed(0),
             noteTurnCompleted: () => Effect.void,
+            noteTitleChanged: () => Effect.void,
+            forgetThread: () => Effect.void,
           }),
         ),
       ),

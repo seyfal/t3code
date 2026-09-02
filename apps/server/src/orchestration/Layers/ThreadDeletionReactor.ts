@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
+import { PrimeAgentSessionSync } from "../../provider/PrimeAgentSessionSync.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -42,11 +43,19 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager.TerminalManager;
+  const primeAgentSessionSync = yield* PrimeAgentSessionSync;
 
   const stopProviderSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
     logCleanupCauseUnlessInterrupted({
       effect: providerService.stopSession({ threadId }),
       message: "thread deletion cleanup skipped provider session stop",
+      threadId,
+    });
+
+  const forgetPrimeAgentSession = (threadId: ThreadDeletedEvent["payload"]["threadId"]) =>
+    logCleanupCauseUnlessInterrupted({
+      effect: primeAgentSessionSync.forgetThread(threadId),
+      message: "thread deletion cleanup skipped prime-agent session removal",
       threadId,
     });
 
@@ -62,6 +71,7 @@ const make = Effect.gen(function* () {
   ) {
     const { threadId } = event.payload;
     yield* stopProviderSession(threadId);
+    yield* forgetPrimeAgentSession(threadId);
     yield* closeThreadTerminals(threadId);
   });
 

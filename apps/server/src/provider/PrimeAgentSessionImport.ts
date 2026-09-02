@@ -104,6 +104,16 @@ interface ParsedPrimeSession {
   readonly name: string | null;
   readonly lastModelSlug: string | null;
   readonly messages: ReadonlyArray<ParsedPrimeSessionMessage>;
+  /** Id of the last tree entry in the file - the parent for an appended entry. */
+  readonly lastEntryId: string | null;
+}
+
+/** Thread title for a session name / first line, capped like the import. */
+export function toThreadTitle(raw: string): string {
+  const trimmed = raw.trim();
+  return trimmed.length > TITLE_MAX_LENGTH
+    ? `${trimmed.slice(0, TITLE_MAX_LENGTH - 3)}...`
+    : trimmed;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,6 +227,7 @@ export function parsePrimeAgentSessionFile(raw: string): ParsedPrimeSession | un
     | undefined;
   let name: string | null = null;
   let lastModelSlug: string | null = null;
+  let lastEntryId: string | null = null;
   const messages: Array<{ role: "user" | "assistant"; text: string; timestamp: string }> = [];
 
   for (const line of lines) {
@@ -232,6 +243,9 @@ export function parsePrimeAgentSessionFile(raw: string): ParsedPrimeSession | un
     }
     if (!isRecord(entry)) {
       continue;
+    }
+    if (entry.type !== "session" && typeof entry.id === "string") {
+      lastEntryId = entry.id;
     }
     if (entry.type === "session") {
       if (typeof entry.id === "string" && typeof entry.cwd === "string") {
@@ -327,6 +341,7 @@ export function parsePrimeAgentSessionFile(raw: string): ParsedPrimeSession | un
     name,
     lastModelSlug,
     messages,
+    lastEntryId,
   };
 }
 
@@ -535,11 +550,9 @@ export const make = Effect.gen(function* () {
       }
 
       const threadId = ThreadId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
-      const rawTitle = parsed.name ?? firstLinePreview(parsed.messages) ?? "Imported session";
-      const title =
-        rawTitle.length > TITLE_MAX_LENGTH
-          ? `${rawTitle.slice(0, TITLE_MAX_LENGTH - 3)}...`
-          : rawTitle;
+      const title = toThreadTitle(
+        parsed.name ?? firstLinePreview(parsed.messages) ?? "Imported session",
+      );
       yield* orchestrationEngine
         .dispatch({
           type: "thread.create",
